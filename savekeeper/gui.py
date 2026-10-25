@@ -307,11 +307,20 @@ class SaveKeeperApp(tk.Tk):
 
     def _backup_root_blocked(self, title: str, fn, exc: PermissionError) -> None:
         """备份目录写入被拒：引导用户换位置，选中后自动重试原操作。"""
+        sidecar = cfg_mod.exe_sidecar_dir()
+        extra = ""
+        if sidecar is not None:
+            extra = (
+                f"\n实测：本程序只稳定写得了「程序自己所在的目录」。\n"
+                f"推荐直接选：{sidecar / 'SaveKeeper-Backups'}\n"
+                f"（或者把整个程序文件夹挪到 D 盘等位置再用）\n"
+            )
         messagebox.showwarning(
             "备份目录被拒绝访问",
             f"写入备份目录时被 Windows 拒绝：\n{exc}\n\n"
             "常见原因：杀毒软件（如火绒、Defender「受控文件夹访问」）"
-            "拦截了新程序的写盘行为。\n\n"
+            "拦截了新程序的写盘行为。\n"
+            f"{extra}\n"
             "选一个其它位置放备份（比如 D:\\SaveKeeper-Backups），选完自动重试。",
             parent=self,
         )
@@ -702,7 +711,21 @@ class SaveKeeperApp(tk.Tk):
 
 
 def main() -> None:
-    SaveKeeperApp().mainloop()
+    app = SaveKeeperApp()
+
+    # 启动预检：立刻实测备份目录可写，被杀软拦截时第一时间弹自救框引导换位置，
+    # 而不是等用户点了「导出」才炸（实测：HIPS 对未信任 exe 只放行 exe 自己的目录）。
+    def _preflight() -> None:
+        try:
+            app.cfg.backup_dir()
+        except PermissionError as exc:
+            app.after(0, lambda: app._backup_root_blocked("启动预检", lambda: None, exc))
+        except OSError:
+            pass  # 其它文件系统错误留给具体操作时报错，不在启动时打断用户
+
+    threading.Thread(target=_preflight, daemon=True).start()
+
+    app.mainloop()
 
 
 if __name__ == "__main__":

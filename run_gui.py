@@ -112,6 +112,30 @@ def _selftest() -> int:
     except Exception:  # noqa: BLE001
         log("\n[3] 配置读取失败:\n" + traceback.format_exc())
 
+    # [3] 备份写入实测：exe 身份下，各候选目录谁真的能写？
+    log("\n[3] 备份目录写入实测（exe 身份）")
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from savekeeper import config as _cfg
+        for name, p in [
+            ("Documents", Path.home() / "Documents" / "SaveKeeper-Backups"),
+            ("LocalAppData", _cfg.local_appdata_dir() / "backups"),
+            ("exe_dir", Path(_sys.executable).resolve().parent / "SaveKeeper-Backups"),
+            ("home", Path.home() / "SaveKeeper-Backups"),
+        ]:
+            log(f"    {name}: {p}")
+            try:
+                p.mkdir(parents=True, exist_ok=True)
+                probe = p / ".sk_probe"
+                probe.write_bytes(b"ok")
+                probe.unlink()
+                log("        write: OK")
+            except Exception as _e:
+                log(f"        write: FAIL {_e}")
+    except Exception as e:
+        log(f"    备份实测段失败: {e}")
+
     out = Path(os.environ.get("TEMP", tempfile.gettempdir())) / "savekeeper_selftest.log"
     out.write_text("\n".join(log_lines), encoding="utf-8")
     print(f"\n日志已写入: {out}")

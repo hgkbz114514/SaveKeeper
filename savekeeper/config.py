@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -74,18 +75,40 @@ def _writable(path: Path) -> bool:
         return False
 
 
+def exe_sidecar_dir() -> Path | None:
+    """打包成 exe 后，exe 所在目录。
+
+    冻结环境（PyInstaller）下杀软 HIPS 通常只放行「程序写自己所在的目录」，
+    这是实测过的唯一稳定可写位置（v0.4.4：Documents / LocalAppData / home 全被拦，
+    exe 同目录 OK）。python 直跑时返回 None，维持原候选顺序。
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    return Path(sys.executable).resolve().parent
+
+
 def pick_backup_root(preferred: str) -> Path:
     """选一个真正可写的备份根目录。
 
     「文档」目录常被 OneDrive 重定向、企业策略或受控文件夹访问锁住
     （WinError 5），所以必须实测可写，不行就层层兜底，绝不让启动崩在这里。
+    打包版还有一个铁律级的候选：exe 自己的目录 —— HIPS 默认放行
+    程序写自己所在目录，其余位置可能全被拦。
     """
     candidates = [
         Path(os.path.expandvars(preferred)),
         Path(os.path.expandvars(DEFAULT_BACKUP_ROOT)),
-        local_appdata_dir() / "backups",
-        Path.home() / "SaveKeeper-Backups",
     ]
+    sidecar = exe_sidecar_dir()
+    if sidecar is not None:
+        # 冻结版：exe 同目录优先于系统目录 —— 实测它是唯一稳定可写的
+        candidates.insert(2, sidecar / "SaveKeeper-Backups")
+    candidates.extend(
+        [
+            local_appdata_dir() / "backups",
+            Path.home() / "SaveKeeper-Backups",
+        ]
+    )
     for cand in candidates:
         if _writable(cand):
             return cand
