@@ -287,6 +287,13 @@ class SaveKeeperApp(tk.Tk):
         def work() -> None:
             try:
                 message = fn()
+            except PermissionError as exc:
+                # 备份目录被安全软件（火绒/Defender 受控文件夹访问）拦住时，
+                # 一句 WinError 5 用户没法自救 —— 给他选一个新位置并自动重试。
+                # exc 必须先固定进局部变量：except 块结束后 Python 会清掉
+                # 异常绑定，延迟到 after 回调再读会 NameError。
+                blocked_exc = exc
+                self.after(0, lambda: self._backup_root_blocked(title, fn, blocked_exc))
             except Exception as exc:  # noqa: BLE001
                 self.after(0, lambda: messagebox.showerror(title, str(exc), parent=self))
                 self.after(0, lambda: self.set_status(f"{title}失败"))
@@ -297,6 +304,28 @@ class SaveKeeperApp(tk.Tk):
                 self._busy = False
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _backup_root_blocked(self, title: str, fn, exc: PermissionError) -> None:
+        """备份目录写入被拒：引导用户换位置，选中后自动重试原操作。"""
+        messagebox.showwarning(
+            "备份目录被拒绝访问",
+            f"写入备份目录时被 Windows 拒绝：\n{exc}\n\n"
+            "常见原因：杀毒软件（如火绒、Defender「受控文件夹访问」）"
+            "拦截了新程序的写盘行为。\n\n"
+            "选一个其它位置放备份（比如 D:\\SaveKeeper-Backups），选完自动重试。",
+            parent=self,
+        )
+        directory = filedialog.askdirectory(
+            title="选择备份存放位置", parent=self, initialdir="C:/"
+        )
+        if not directory:
+            self.set_status(f"{title}失败：备份目录被拒绝访问")
+            return
+        self.cfg.backup_root = directory
+        object.__setattr__(self.cfg, "_backup_dir_cache", None)
+        cfg_mod.save(self.cfg)
+        self.set_status(f"备份位置已改为 {directory}，重试中…")
+        self._run(title, fn)
 
     def open_dir(self) -> None:
         path = self.current_path()
