@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# 演示数据（demo_setup.py 生成，不入库）
+demo-home/
+demo-save/
+.runtime-tmp/

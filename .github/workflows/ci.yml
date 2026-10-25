@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install pytest
+        run: python -m pip install pytest
+      - name: Run tests
+        run: python -m pytest tests -q
+
+  build-exe:
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install PyInstaller
+        run: python -m pip install pyinstaller
+      - name: Build (onedir)
+        run: python -m PyInstaller SaveKeeper.spec --noconfirm --clean
+      - name: Package zip
+        run: Compress-Archive -Path dist/SaveKeeper/* -DestinationPath dist/SaveKeeper-Windows.zip
+      - name: Smoke test exe
+        run: |
+          # 无界面 runner 上无法真正开窗，只验证 exe 存在且能被加载
+          if (-not (Test-Path dist/SaveKeeper/SaveKeeper.exe)) { throw "SaveKeeper.exe 未生成" }
+          (Get-Item dist/SaveKeeper/SaveKeeper.exe).Length
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SaveKeeper-Windows
+          path: dist/SaveKeeper-Windows.zip

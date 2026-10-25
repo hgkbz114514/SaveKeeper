@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "savekeeper"
+version = "0.1.0"
+description = "游戏存档一键管理工具：一键定位存档目录，快速备份 / 还原 / 校验存档"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "SaveKeeper contributors" }]
+keywords = ["game-save", "backup", "restore", "steam", "save-manager"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Topic :: Games/Entertainment",
+    "Topic :: System :: Archiving :: Backup",
+]
+# 运行时零第三方依赖：只用标准库
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pyinstaller>=6.0", "pytest>=7.0"]
+
+[project.scripts]
+savekeeper = "savekeeper.cli:main"
+savekeeper-gui = "savekeeper.gui:main"
+
+[project.urls]
+Homepage = "https://github.com/hgkbz114514/SaveKeeper"
+Repository = "https://github.com/hgkbz114514/SaveKeeper"
+Issues = "https://github.com/hgkbz114514/SaveKeeper/issues"
+
+[tool.setuptools]
+packages = ["savekeeper"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
