@@ -9,7 +9,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from . import config as cfg_mod
-from . import core, games as games_mod, paths
+from . import core, games as games_mod, installscan, paths
 
 
 class SaveKeeperApp(tk.Tk):
@@ -46,6 +46,9 @@ class SaveKeeperApp(tk.Tk):
         ttk.Label(top, text="（输入名称过滤）").pack(side="left")
 
         ttk.Button(top, text="＋ 自定义游戏", command=self.add_custom_game).pack(side="right")
+        ttk.Button(top, text="＋ 从游戏文件夹添加", command=self.add_from_install_dir).pack(
+            side="right", padx=(0, 4)
+        )
         ttk.Button(top, text="刷新", command=self.refresh_games).pack(side="right", padx=4)
 
         body = ttk.Frame(self, padding=(8, 0, 8, 8))
@@ -359,6 +362,102 @@ class SaveKeeperApp(tk.Tk):
         cfg_mod.save(self.cfg)
         self.refresh_games()
         self.set_status(f"已设置 {game.name} 存档目录：{directory}")
+
+    def add_from_install_dir(self) -> None:
+        """选一个游戏本体目录 → 反推存档位置 → 存成自定义游戏。
+
+        这是给「绿色版 / 破解版 / 刚下的新游戏」准备的路子：这些游戏没有
+        Steam 清单，内置库也不会收录，但它一定有本体目录。反推逻辑见
+        :mod:`savekeeper.installscan`，四条线索交叉（appid → 本体存档目录 →
+        存档根目录反查 → 引擎模板），不靠猜文件夹名。
+        """
+        directory = filedialog.askdirectory(title="选择游戏本体文件夹（包含 .exe 的那一层）")
+        if not directory:
+            return
+
+        install = Path(directory)
+        # 扫描要读目录树，放到后台线程，避免界面卡死
+        self.set_status("正在分析游戏目录…")
+        result = installscan.scan_install_dir(install)
+
+        if result.ok and result.save_dir:
+            self._confirm_install_scan(install, result)
+            return
+
+        # 没定下来：把候选给用户点，选中的那个当存档目录
+        if result.candidates:
+            self._choose_from_candidates(install, result)
+        else:
+            messagebox.showwarning(
+                "SaveKeeper",
+                f"没能从这个目录推断出存档位置。\n\n{result.reason}\n\n"
+                "可以先用「＋ 自定义游戏」手动指定存档目录，\n"
+                "或先进游戏存一次档再回来试。",
+            )
+            self.set_status("未推断出存档位置")
+
+    def _confirm_install_scan(self, install: Path, result: object) -> None:
+        name = install.name
+        save_dir = result.save_dir  # type: ignore[attr-defined]
+        if not messagebox.askyesno(
+            "SaveKeeper",
+            f"识别到游戏：{name}\n"
+            f"存档目录：{save_dir}\n\n"
+            f"判定依据：{result.reason}\n"  # type: ignore[attr-defined]
+            f"置信度：{result.confidence}\n\n"
+            "添加到游戏列表吗？",
+        ):
+            self.set_status("已取消")
+            return
+        self.cfg.add_custom_game(name, str(save_dir))
+        cfg_mod.save(self.cfg)
+        self.search_var.set("")
+        self.refresh_games()
+        self.set_status(f"已添加：{name} → {save_dir}")
+
+    def _choose_from_candidates(self, install: Path, result: object) -> None:
+        dialog = tk.Toplevel(self)
+        dialog.title("选择存档目录")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.geometry("680x340")
+
+        ttk.Label(
+            dialog,
+            text=f"未能唯一确定「{install.name}」的存档位置，请选择：",
+            font=("", 10, "bold"),
+        ).pack(anchor="w", padx=10, pady=(10, 4))
+        ttk.Label(dialog, text=f"（{result.reason}）", foreground="#555").pack(  # type: ignore[attr-defined]
+            anchor="w", padx=10
+        )
+
+        frame = ttk.Frame(dialog)
+        frame.pack(fill="both", expand=True, padx=10, pady=8)
+        listbox = tk.Listbox(frame)
+        listbox.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(frame, orient="vertical", command=listbox.yview)
+        sb.pack(side="right", fill="y")
+        listbox.configure(yscrollcommand=sb.set)
+
+        cands = result.candidates  # type: ignore[attr-defined]
+        for cand, why in cands:
+            listbox.insert("end", f"{cand}    ← {why}")
+        listbox.selection_set(0)
+
+        def submit() -> None:
+            sel = listbox.curselection()
+            if not sel:
+                return
+            chosen = cands[int(sel[0])][0]
+            self.cfg.add_custom_game(install.name, str(chosen))
+            cfg_mod.save(self.cfg)
+            self.search_var.set("")
+            self.refresh_games()
+            dialog.destroy()
+            self.set_status(f"已添加：{install.name} → {chosen}")
+
+        ttk.Button(dialog, text="用这个目录", command=submit).pack(pady=10)
+        dialog.wait_window()
 
     def open_backup_dir(self) -> None:
         game = self.current_game()

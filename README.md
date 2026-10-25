@@ -6,7 +6,7 @@
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-lightgrey)
 ![Deps](https://img.shields.io/badge/runtime%20deps-0-success)
-![Tests](https://img.shields.io/badge/tests-27%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-47%20passed-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ![SaveKeeper 主界面](assets/screenshot.png)
@@ -29,6 +29,8 @@ SaveKeeper 把这件事压缩成两步：**选游戏 → 点按钮**。
 | 🗂 **自定义游戏** | 内置库没有的游戏，手动指定路径即可 |
 | 💻 **CLI + GUI** | 图形界面为主，命令行同样全功能（脚本 / 无桌面环境可用） |
 | 🎮 **内置 73 款游戏路径** | 自动检测；库里没有的用「自定义游戏」手动指定 |
+| 🔎 **自动发现新游戏** | 扫描本机已装游戏（Steam / Epic / 注册表）逐个找存档，内置库装不下的也认 |
+| 📁 **从游戏文件夹反推存档** | 绿色版 / 破解版没有 Steam 清单？指一下游戏本体目录，它自己找存档在哪 |
 
 ---
 
@@ -96,11 +98,27 @@ python -m PyInstaller SaveKeeper.spec --noconfirm --clean
 **导出**：选中游戏 → 点「导出存档」（可填备注，如"通关前"）。
 **还原**：选中游戏 → 在快照列表选中一条 → 点「导入存档」。导入前会自动把当前存档再备份一份。
 
+**游戏不在列表里？** 顶部两个按钮：
+
+- **「＋ 从游戏文件夹添加」** —— 选游戏本体目录（含 `.exe` 那层），它反推存档位置并给你看依据，确认后入列。绿色版、破解版、刚下的新游戏都走这条。
+- **「＋ 自定义游戏」** —— 你已经知道存档在哪，直接手动指定。
+
 ### 命令行
 
 ```bash
 # 列出全部游戏 + 自动检测结果
 python -m savekeeper list
+
+# 扫描本机已装游戏，自动探测每款的存档目录
+python -m savekeeper scan
+python -m savekeeper scan --verbose --save
+
+# 从游戏本体文件夹反推存档（绿色版/破解版靠这个）
+python -m savekeeper scan-install "D:/Games/新下的游戏"
+python -m savekeeper scan-install "D:/Games/新下的游戏" --save --open
+
+# 看最近谁动过存档（先进游戏存一次档）
+python -m savekeeper recent --days 30
 
 # 一键打开存档目录
 python -m savekeeper open eldenring
@@ -134,14 +152,77 @@ python -m savekeeper verify "C:\Users\你\Documents\SaveKeeper-Backups\eldenring
 **内置游戏库已收录 73 款游戏**（艾尔登法环、博德之门3、黑神话：悟空、原神、星露谷物语、
 GTA5、赛博朋克2077、幻兽帕鲁、潜水员戴夫、死亡细胞……），完整列表在 `savekeeper/games.py`。
 
-按优先级依次探测，命中即用（全部**只读**探测，不写任何文件）：
+**但内置库不是全部。** 刚下的新游戏、绿色版、破解版都不在其中，所以还有三条自动发现的
+路子，一条比一条管用（全部**只读**探测，不写任何文件）：
 
-1. **Steam 云存档目录** —— `Steam/userdata/<用户ID>/<appid>/remote`，比硬编码路径可靠得多
-2. **硬编码候选路径** —— 内置游戏库里每个游戏登记的常见路径（`%APPDATA%` / `%LOCALAPPDATA%` / `Documents`）
-3. **Steam userdata 兜底** —— 扫描 `userdata/*/<appid>`
-4. **用户手动配置** —— `setpath` 或 GUI 里的「设置存档路径」
+### 路子 1：`scan` —— 扫描本机已装游戏
+
+```bash
+python -m savekeeper scan            # 扫 Steam / Epic / 注册表里的游戏，逐个找存档
+python -m savekeeper scan --verbose  # 显示每款的判定依据
+python -m savekeeper scan --save     # 命中的写进配置，之后可直接按游戏名操作
+```
+
+判断依据是四条独立线索交叉，不靠猜文件夹名：
+
+1. **Steam 云存档** —— 有 appid 就能直接定位 `userdata/<uid>/<appid>`，与游戏名无关
+2. **已装清单** —— 解析 Steam 的 `appmanifest_*.acf`、Epic 的 `*.item`、注册表 Uninstall 项
+3. **名字反查** —— 拿产品名去 `AppData` / `Documents/My Games` / `Saved Games`
+   反查 `<公司>/<游戏>` 两级布局（Rockstar、CDPR、Unity 游戏都这么存）
+4. **内容验证** —— 名字对上还不够，必须真的含存档文件，否则会把崩溃日志目录当存档
+
+### 路子 2：`scan-install` —— 从游戏本体文件夹反推
+
+这是给**绿色版 / 破解版 / 刚下的新游戏**准备的：它们没有 Steam 清单，但一定有本体目录。
+
+```bash
+python -m savekeeper scan-install "D:/Games/SomeGame"
+python -m savekeeper scan-install "D:/Games/SomeGame" --save --open
+```
+
+图形界面里对应顶部按钮 **「＋ 从游戏文件夹添加」**，选完就能看到判定依据与置信度，
+确认后直接进列表，之后一键打开。
+
+反推时会看这些东西：
+
+- 本体里的 `steam_api64.dll` / `steam_appid.txt` / 注册表 → 拿到 appid，走云存档精确链路
+- 本体内 `savedata/`、`saves/`、`win64_save/` 这类目录（**并且验证里面真有存档**）
+- exe 的版本资源（产品名 / 公司名）→ 去 AppData 下反查
+- 引擎特征（Unity / Unreal / Godot / RPGMaker / Ren'Py）→ 按引擎惯例展开
+- `steam_autocloud.vdf` → Steam 自己塞的云同步标记，文件在就等于"这里是存档目录"
+
+### 路子 3：`recent` —— 看最近谁动过存档
+
+```bash
+python -m savekeeper recent --days 30
+```
+
+不确定游戏把存档写哪儿时，先进游戏存一次档，再跑这个，最近改动过的目录会排在最前面。
+会自动排除缓存、临时目录、崩溃转储和软件更新器。
+
+### 兜底：手动指定
+
+```bash
+python -m savekeeper setpath eldenring "D:/Save/EldenRing"
+python -m savekeeper add "我的游戏" "D:/Save/MyGame"
+```
 
 Steam 安装目录从注册表 `HKCU\Software\Valve\Steam` 读取，只读不写。
+
+---
+
+## 那些容易踩的坑
+
+自动定位最难的不是"找目录"，是**认得出真假**。实测遇到过的：
+
+| 现象 | 真相 | 现在怎么处理 |
+| --- | --- | --- |
+| `savedata/` 里有 `save0121.dat`，看着像存档 | 两个不同游戏里这个文件的 SHA-256 完全相同 —— 23 KB 的模板占位档 | 评分把**存档数量与总体量**算进去，真存档（10 份 × 260 KB）排第一 |
+| `AppData/Rockstar Games/RDR2` 名字完全对 | 里面只有 `CrashLogs/settings.dat` | 崩溃/日志路径整段跳过，不参与判定 |
+| `AppData/Local/CDPR/Cyberpunk 2077` 名字完全对 | 只有 `UserSettings.json` | `.json` 默认算弱证据，除非文件名带 save/profile |
+| `AppData/Local/Draw&Guess` 扩展名一个都不认识 | 里面全是 `.dgm`/`.dgwl`，但有 `steam_autocloud.vdf` | 云同步标记直接认定为存档目录 |
+| `recent` 列出 `Temp/hindsight-dsh` | 只看最后一级目录名，父级是 `Temp` 没被抓到 | 改成检查完整路径的每一层 |
+| `recent` 列出 Telegram / 豆包 / Quark 更新器 | AppData 下到处是 `.json`/`.db` | 本地目录必须命中游戏存档特征（`LocalLow`、`My Games`、强扩展名）才展示 |
 
 ---
 
@@ -196,8 +277,9 @@ Steam 安装目录从注册表 `HKCU\Software\Valve\Steam` 读取，只读不写
 python -m pytest tests -v
 ```
 
-27 个测试覆盖关键路径，包括：
+47 个测试覆盖关键路径，包括：
 
+**快照引擎**
 - `test_verify_detects_tampering` —— 删除 / 改写 / 追加 / 清空四种破坏都能被检出
 - `test_restore_blocked_when_snapshot_corrupt` —— **校验失败时当前存档一字节不被覆盖**
 - `test_restore_roundtrip_no_data_loss` —— 还原后文件集合与原存档完全一致，无丢失
@@ -205,6 +287,14 @@ python -m pytest tests -v
 - `test_builtin_games_not_mutated_by_overrides` —— 改配置不污染内置游戏库
 - `test_chinese_label_kept_in_folder_name` —— 中文备注能正确进快照名，不退化
 - `test_safe_label_strips_illegal_chars` —— 路径非法字符被替换，不会造出打不开的目录
+
+**自动发现（`test_installscan.py`）**
+- `test_placeholder_savedata_loses_to_real_saves` —— 23 KB 占位模板不会压过 10 份 260 KB 真存档
+- `test_single_big_save_dir_still_wins` —— 单份 11 MB 存档同样排第一（怪物猎人布局）
+- `test_crash_logs_are_not_a_save_dir` —— 只有崩溃日志+设置的目录够不上 high 置信度
+- `test_steam_cloud_marker_makes_dir_a_save` —— 有 `steam_autocloud.vdf` 就认定是存档目录
+- `test_confidence_requires_more_than_one_tiny_file` —— 单份小文件拿不到 high
+- `test_scan_install_dir_finds_inner_saves` —— 从本体目录直接扫出本体内的 `saves/`
 
 ---
 
@@ -214,15 +304,18 @@ python -m pytest tests -v
 savekeeper/
 ├── savekeeper/
 │   ├── __init__.py
-│   ├── core.py      # 快照引擎：导出 / SHA-256 校验 / 还原 / 外部导入
-│   ├── paths.py     # 路径展开、Steam 注册表与 userdata 探测、资源管理器打开
-│   ├── games.py     # 内置游戏库 + 自动检测优先级
-│   ├── config.py    # 配置持久化 + 备份目录多层兜底
-│   ├── gui.py       # tkinter 界面
-│   └── cli.py       # 命令行入口
+│   ├── core.py        # 快照引擎：导出 / SHA-256 校验 / 还原 / 外部导入
+│   ├── paths.py       # 路径展开、Steam 注册表与 userdata 探测、资源管理器打开
+│   ├── games.py       # 内置游戏库 + 自动检测优先级
+│   ├── discover.py    # 自动发现：扫已装游戏、名字反查存档根目录、近期活跃目录
+│   ├── installscan.py # 从游戏本体目录反推存档（绿色版/破解版/新游戏）
+│   ├── config.py      # 配置持久化 + 备份目录多层兜底
+│   ├── gui.py         # tkinter 界面
+│   └── cli.py         # 命令行入口
 ├── tests/
 │   ├── test_core.py
-│   └── test_games_config.py
+│   ├── test_games_config.py
+│   └── test_installscan.py
 ├── assets/
 │   ├── icon.ico
 │   ├── icon.png
@@ -249,12 +342,25 @@ savekeeper/
 **提示「存档完整性校验失败，已阻止覆盖」？**
 说明选中的快照被改过或损坏了，程序一个字节都不会写。换一条快照，或重新导出。
 
+**新下的游戏列表里没有，怎么打开它的存档？**
+两种办法：① 顶部「＋ 从游戏文件夹添加」，选游戏本体目录，它自己反推存档位置；
+② 命令行 `python -m savekeeper scan` 扫一遍本机已装游戏。都不行再「＋ 自定义游戏」手动指定。
+
+**为什么找不到存档？**
+多数情况是这游戏还没存过档（目录还没被创建）。先进游戏玩一会儿存一次档，再回来看。
+也可以 `python -m savekeeper recent --days 7` 看哪些目录刚被动过。
+
+**从游戏文件夹添加时提示「未能唯一确定」？**
+说明找到了多个可能位置但证据都不够。界面上会把候选列出来让你点，选对的那个就行。
+判断依据（存档数量、体量、是否含云同步标记）会一起显示，方便你自己核实。
+
 ---
 
 ## 已知限制
 
-- 部分冷门/新游不在内置库里，**用「自定义游戏」手动指定即可**（或提 Issue 补充）
+- 部分冷门/新游不在内置库里 —— 用「＋ 从游戏文件夹添加」或 `scan` 自动发现，都不行再手动指定
 - 存档是单个二进制大文件时（如 `ER0000.sl2`），快照就是整文件拷贝，没有做增量
+- 自动发现对**完全自研引擎 + 加密存档**的游戏仍可能失手（认不出扩展名、目录名也不像），此时只能手动指定
 - 目前主要面向 Windows 10/11；Linux/macOS 下 CLI 可用（路径探测部分降级），GUI 未验证
 - 存档路径硬编码来自社区经验，不同机器/系统版本可能有差异，检测不到请手动指定
 
@@ -262,12 +368,13 @@ savekeeper/
 
 ## 更新记录
 
+- **0.2.0** —— 自动发现能力：`scan` 扫描本机已装游戏、`scan-install` 从游戏本体目录反推存档（覆盖绿色版/破解版）、`recent` 查看近期活跃存档；GUI 加「＋ 从游戏文件夹添加」；修掉占位模板档压过真存档、崩溃日志目录被当存档、Steam 保留 appid 被当游戏等问题
 - **0.1.0** —— 首个版本：73 款内置游戏路径、快照导出/还原/校验、GUI + CLI、打包脚本
 
 欢迎提 Issue / PR，特别是：
 
 1. **补充内置游戏库**（`savekeeper/games.py` 的 `BUILTIN_GAMES`）——附上你验证过的存档路径
-2. 更好的存档路径自动检测思路
+2. **补充存档识别规则**（`savekeeper/installscan.py` 的扩展名/目录名/黑名单）——附上「游戏名 + 存档实际路径 + 你踩到的误判」
 3. Linux/macOS 适配
 
 提 PR 前请先跑 `python -m pytest tests -q`。

@@ -241,6 +241,14 @@ def resolve_game_path(game: Game) -> Path | None:
         p = paths.expand(game.custom_path)
         if p.is_dir():
             return p
+
+    # 5) 自动发现兜底：内置库没覆盖的新游戏靠这里
+    #    延迟导入，避免 discover ↔ games 的循环引用
+    from . import discover
+
+    result = discover.discover_save_dir(game.name, game.steam_appid)
+    if result.ok and result.confidence in ("high", "medium"):
+        return result.path
     return None
 
 

@@ -163,6 +163,106 @@ def cmd_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_scan_install(args: argparse.Namespace) -> int:
+    """从一个游戏本体目录反推存档位置（绿色版/破解版/新游戏都用得上）。"""
+    from . import installscan
+
+    install = Path(args.path)
+    if not install.is_dir():
+        print(f"[中止] 目录不存在：{install}")
+        return 2
+
+    scan = installscan.scan_install_dir(install, args.name or "")
+    print(scan.summary())
+
+    if not scan.ok:
+        print("\n未自动确定。可加 --pick 交互选择候选，或用：")
+        print(f'  savekeeper add "{scan.game_name or install.name}" "D:/存档目录"')
+        return 1
+
+    if args.save:
+        cfg = cfg_mod.load()
+        cfg.add_custom_game(scan.game_name or install.name, str(scan.save_dir))
+        cfg_mod.save(cfg)
+        print(f"\n已写入配置：{scan.game_name or install.name}")
+    if args.open and scan.save_dir:
+        paths.open_in_explorer(scan.save_dir)
+    return 0
+
+
+def cmd_scan(args: argparse.Namespace) -> int:
+    """扫描已安装游戏并自动探测存档目录 —— 解决内置库装不下的新游戏。"""
+    from . import discover
+
+    if args.refresh:
+        discover.clear_cache()
+
+    print("正在扫描已安装游戏……")
+    found = discover.installed_games()
+    if not found:
+        print("未扫描到任何已安装游戏（可能未装 Steam/Epic，或清单不可读）。")
+        print("可直接用：savekeeper add \"游戏名\" \"D:/存档目录\"")
+        return 0
+
+    print(f"共扫描到 {len(found)} 款已安装游戏，开始探测存档目录……\n")
+    rows: list[tuple[str, str, str, str]] = []
+    hit = 0
+    for game in found:
+        result = discover.discover_save_dir(game.name, game.appid, game.install_dir)
+        if result.ok:
+            hit += 1
+            rows.append((game.name, game.platform, str(result.path), f"{result.confidence} · {result.reason}"))
+        elif args.all:
+            rows.append((game.name, game.platform, "未找到", result.reason))
+
+    if not rows:
+        print("没有自动探测到存档目录。可加 --all 查看每款游戏的失败原因。")
+        return 0
+
+    print(f"{'游戏':<34}{'平台':<8}{'存档目录'}")
+    print("-" * 110)
+    for name, platform, path, reason in rows:
+        print(f"{name:<34}{platform:<8}{path}")
+        if args.verbose:
+            print(f"{'':<42}└─ {reason}")
+    print("-" * 110)
+    print(f"自动命中 {hit} / {len(found)} 款。命中的可直接 export / snapshots 使用。")
+    print("未命中的用：savekeeper add \"游戏名\" \"D:/存档目录\" 手动补充。")
+
+    if args.save:
+        cfg = cfg_mod.load()
+        saved = 0
+        for name, _platform, path, _reason in rows:
+            if path == "未找到":
+                continue
+            cfg.add_custom_game(name, path)
+            saved += 1
+        if saved:
+            cfg_mod.save(cfg)
+            print(f"已把 {saved} 款游戏写入配置，之后可直接用游戏名操作。")
+    return 0
+
+
+def cmd_recent(args: argparse.Namespace) -> int:
+    """列出最近改动过的存档目录 —— 刚下载的游戏玩一次后用它定位。"""
+    from . import discover
+
+    discover.clear_cache()
+    rows = discover.recent_activity(days=args.days, limit=args.limit)
+    if not rows:
+        print(f"最近 {args.days} 天内没有发现改动过的存档目录。")
+        print("提示：先进游戏玩一会、存一次档，再回来跑这条命令。")
+        return 0
+    print(f"最近 {args.days} 天内有存档改动的目录（按时间倒序）：\n")
+    for path, days, hint, kind in rows:
+        label = f"{hint} " if hint else ""
+        print(f"  {days:>3} 天前  {label}{path}")
+        print(f"{'':<14}└─ {kind}")
+    print("\n确认哪个是你要的，用：savekeeper add \"游戏名\" \"上面对应路径\"")
+    print("Steam 来源的条目其实已被自动识别，直接在 GUI 里选游戏即可。")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="savekeeper", description="游戏存档一键管理工具")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -207,6 +307,28 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_setpath)
 
     sub.add_parser("config", help="查看当前配置").set_defaults(func=cmd_config)
+
+    sp = sub.add_parser(
+        "scan-install",
+        help="从一个游戏本体文件夹反推存档位置（绿色版/破解版/新游戏靠这个）",
+    )
+    sp.add_argument("path", help="游戏本体目录（包含 .exe 的那一层）")
+    sp.add_argument("--name", default="", help="自定义游戏名，默认用目录名")
+    sp.add_argument("--save", action="store_true", help="把结果写入配置")
+    sp.add_argument("--open", action="store_true", help="定位到存档目录")
+    sp.set_defaults(func=cmd_scan_install)
+
+    sp = sub.add_parser("scan", help="扫描已安装游戏并自动探测存档目录（新游戏靠这个）")
+    sp.add_argument("--all", action="store_true", help="同时列出未命中的游戏")
+    sp.add_argument("--verbose", action="store_true", help="显示每款的判定依据")
+    sp.add_argument("--save", action="store_true", help="把命中的结果写入配置")
+    sp.add_argument("--refresh", action="store_true", help="忽略缓存重新扫描")
+    sp.set_defaults(func=cmd_scan)
+
+    sp = sub.add_parser("recent", help="列出最近改动过的存档目录")
+    sp.add_argument("--days", type=int, default=14, help="回看天数，默认 14")
+    sp.add_argument("--limit", type=int, default=20, help="最多返回条数，默认 20")
+    sp.set_defaults(func=cmd_recent)
     return p
 
 
