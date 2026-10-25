@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import shutil
 import subprocess
 import sys
@@ -288,12 +289,26 @@ class SaveKeeperApp(tk.Tk):
             try:
                 message = fn()
             except PermissionError as exc:
-                # 备份目录被安全软件（火绒/Defender 受控文件夹访问）拦住时，
-                # 一句 WinError 5 用户没法自救 —— 给他选一个新位置并自动重试。
+                # 安全软件拦截写盘时分流自救：
+                # - 拦的是备份目录 → 弹「选备份位置」（换成可写的地方，自动重试）
+                # - 拦的是别处（几乎总是游戏存档目录，比如 Steam userdata）→
+                #   备份目录搬到哪都没用，唯一出路是提权重试 —— 引导「以管理员身份运行」。
                 # exc 必须先固定进局部变量：except 块结束后 Python 会清掉
                 # 异常绑定，延迟到 after 回调再读会 NameError。
                 blocked_exc = exc
-                self.after(0, lambda: self._backup_root_blocked(title, fn, blocked_exc))
+                blocked_path = getattr(exc, "filename", "") or ""
+                backup_root = ""
+                try:
+                    backup_root = str(self.cfg.backup_dir())
+                except Exception:  # noqa: BLE001
+                    pass
+                if blocked_path and backup_root and blocked_path.startswith(backup_root):
+                    self.after(0, lambda: self._backup_root_blocked(title, fn, blocked_exc))
+                else:
+                    self.after(
+                        0,
+                        lambda: self._archive_dir_blocked(title, blocked_exc, blocked_path),
+                    )
             except Exception as exc:  # noqa: BLE001
                 self.after(0, lambda: messagebox.showerror(title, str(exc), parent=self))
                 self.after(0, lambda: self.set_status(f"{title}失败"))
@@ -335,6 +350,50 @@ class SaveKeeperApp(tk.Tk):
         cfg_mod.save(self.cfg)
         self.set_status(f"备份位置已改为 {directory}，重试中…")
         self._run(title, fn)
+
+    def _archive_dir_blocked(self, title: str, exc: PermissionError, path: str) -> None:
+        """游戏存档目录写入被拒（拦的不是备份目录）——引导以管理员身份重启。
+
+        换备份位置救不了这一种：存档目录是游戏的地盘（如 Steam userdata），
+        没法搬。实测火绒对未信任 exe 写用户目录一律拦，提权后的进程通常会放行。
+        """
+        where = f"\n被拒绝的位置：{path}" if path else ""
+        choice = messagebox.askyesno(
+            f"{title}被拒绝",
+            "写入游戏存档目录时被 Windows 拒绝：\n"
+            f"{exc}{where}\n\n"
+            "这是杀毒软件在拦截本程序写系统里的游戏存档（常见于火绒/受控文件夹访问）。\n"
+            "备份位置怎么换都救不了这一步 —— 需要给本程序管理员权限再试。\n\n"
+            "现在以管理员身份重新启动 SaveKeeper 吗？\n"
+            "（弹出 UAC 窗口请点「是」，重启后再操作一次即可）",
+            parent=self,
+        )
+        if not choice:
+            self.set_status(f"{title}失败：存档目录被拒绝访问")
+            return
+        try:
+            # ShellExecuteW runas = 右键「以管理员身份运行」的等价调用。
+            # 源码模式跑的是 python.exe，必须带上主模块路径，否则只开个空解释器；
+            # 打包 exe 模式 sys.executable 就是程序本身，不带参数。
+            if getattr(sys, "frozen", False):
+                exe, params = sys.executable, None
+            else:
+                main_py = Path(__file__).resolve().parent.parent / "__main__.py"
+                exe, params = sys.executable, f'"{main_py}"'
+            ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 1)
+            if ret > 32:
+                self.set_status("已请求管理员权限，正在重启…")
+                self.after(600, self.destroy)
+                return
+            raise OSError(f"ShellExecute 返回 {ret}")
+        except Exception as restart_exc:  # noqa: BLE001
+            messagebox.showerror(
+                "重启失败",
+                f"没能以管理员身份重启（{restart_exc}）。\n\n"
+                "手动操作：右键 SaveKeeper.exe → 「以管理员身份运行」。",
+                parent=self,
+            )
+            self.set_status(f"{title}失败：需要管理员权限")
 
     def open_dir(self) -> None:
         path = self.current_path()
