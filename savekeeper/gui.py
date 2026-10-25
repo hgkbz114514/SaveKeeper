@@ -288,7 +288,7 @@ class SaveKeeperApp(tk.Tk):
             try:
                 message = fn()
             except Exception as exc:  # noqa: BLE001
-                self.after(0, lambda: messagebox.showerror(title, str(exc)))
+                self.after(0, lambda: messagebox.showerror(title, str(exc), parent=self))
                 self.after(0, lambda: self.set_status(f"{title}失败"))
             else:
                 self.after(0, lambda: self.set_status(message))
@@ -301,16 +301,38 @@ class SaveKeeperApp(tk.Tk):
     def open_dir(self) -> None:
         path = self.current_path()
         if path is None:
-            messagebox.showwarning("SaveKeeper", "未检测到存档目录，请先「设置存档路径」")
+            self._no_path_help("打开存档目录")
             return
         paths.open_in_explorer(path)
         self.set_status(f"已打开 {path}")
+
+    def _no_path_help(self, action: str) -> None:
+        """没找到存档目录时不该只是「没反应」或一句话弹窗。
+
+        messageboxes 不带 parent 时可能被主窗口压在后面，看起来就是点了没反应；
+        这里统一带 parent=self，并直接给出下一步能做的事。
+        """
+        game = self.current_game()
+        name = game.name if game else "该游戏"
+        if game is None:
+            return
+        go_set = messagebox.askyesno(
+            "SaveKeeper",
+            f"还没有找到「{name}」的存档目录。\n\n"
+            "现在选一下存档在哪个文件夹吗？\n"
+            "（也可以点「📁 从游戏文件夹添加」自动反推）",
+            parent=self,
+        )
+        if go_set:
+            self.set_path()
+        else:
+            self.set_status(f"{action}已取消：未设置存档目录")
 
     def export(self) -> None:
         game = self.current_game()
         path = self.current_path()
         if game is None or path is None:
-            messagebox.showwarning("SaveKeeper", "未检测到存档目录，请先「设置存档路径」")
+            self._no_path_help("导出存档")
             return
 
         def job() -> str:
@@ -329,7 +351,10 @@ class SaveKeeperApp(tk.Tk):
         if game is None:
             return
         if snap is None:
-            messagebox.showwarning("SaveKeeper", "请先在下方列表双击（或用右键菜单）选一个备份快照")
+            messagebox.showwarning("SaveKeeper", "请先在下方列表双击（或用右键菜单）选一个备份快照", parent=self)
+            return
+        if path is None:
+            self._no_path_help("导入存档")
             return
 
         # 游戏还开着的时候换档没有意义：多数游戏退出时会把内存里的存档写回去，
@@ -341,6 +366,7 @@ class SaveKeeperApp(tk.Tk):
                 f"检测到 {running} 正在运行。\n\n"
                 "先完全退出游戏再换档 —— 多数游戏退出时会把内存里的存档写回去，"
                 "刚换好的文件会被覆盖。",
+                parent=self,
             )
             return
 
@@ -350,6 +376,7 @@ class SaveKeeperApp(tk.Tk):
             "确认导入",
             f"将用快照「{snap.name}」覆盖当前存档。\n"
             f"导入前会自动备份当前存档，可随时回退。\n\n继续？",
+            parent=self,
         ):
             return
 
@@ -396,7 +423,7 @@ class SaveKeeperApp(tk.Tk):
         """把快照导成一个独立文件夹，用于发给别人或存到网盘。"""
         snap = self.selected_snapshot()
         if snap is None:
-            messagebox.showwarning("SaveKeeper", "请先选中一个快照")
+            messagebox.showwarning("SaveKeeper", "请先选中一个快照", parent=self)
             return
         target = filedialog.askdirectory(title="把快照导出到哪个文件夹")
         if not target:
@@ -434,11 +461,11 @@ class SaveKeeperApp(tk.Tk):
                 try:
                     zip_mod.extract_zip(src, stage)
                 except zip_mod.ArchiveError as exc:
-                    messagebox.showerror("导入存档", str(exc))
+                    messagebox.showerror("导入存档", str(exc), parent=self)
                     return
                 source, why = zip_mod.pick_save_subdir(stage)
                 if source != stage:
-                    messagebox.showinfo("已自动定位存档目录", why)
+                    messagebox.showinfo("已自动定位存档目录", why, parent=self)
             else:
                 # 单文件拖入：把它放进一个临时目录再走统一流程
                 stage = zip_mod.stage_temp_dir()
@@ -458,6 +485,7 @@ class SaveKeeperApp(tk.Tk):
                 "SaveKeeper",
                 "这个目录里没有要导入的文件。\n"
                 "如果下载的是 zip，直接选 zip 即可，软件会自动解压定位。",
+                parent=self,
             )
             return
         lines = [f"来源：{source}"]
@@ -469,7 +497,7 @@ class SaveKeeperApp(tk.Tk):
             sample = [e.rel for e in preview.entries if e.kind == "new"][:5]
             lines.append("\n将新增：\n  " + "\n  ".join(sample))
         lines.append("\n导入前会自动备份当前存档，可随时回退。")
-        if not messagebox.askyesno("确认导入", "\n".join(lines)):
+        if not messagebox.askyesno("确认导入", "\n".join(lines), parent=self):
             return
 
         def job() -> str:
@@ -522,6 +550,7 @@ class SaveKeeperApp(tk.Tk):
                 f"没能从这个目录推断出存档位置。\n\n{result.reason}\n\n"
                 "可以先用「＋ 自定义游戏」手动指定存档目录，\n"
                 "或先进游戏存一次档再回来试。",
+                parent=self,
             )
             self.set_status("未推断出存档位置")
 
@@ -535,6 +564,7 @@ class SaveKeeperApp(tk.Tk):
             f"判定依据：{result.reason}\n"  # type: ignore[attr-defined]
             f"置信度：{result.confidence}\n\n"
             "添加到游戏列表吗？",
+            parent=self,
         ):
             self.set_status("已取消")
             return
@@ -598,7 +628,9 @@ class SaveKeeperApp(tk.Tk):
         snap = self.selected_snapshot()
         if snap is None:
             return
-        if not messagebox.askyesno("删除快照", f"确定删除快照「{snap.name}」？此操作不可恢复。"):
+        if not messagebox.askyesno(
+            "删除快照", f"确定删除快照「{snap.name}」？此操作不可恢复。", parent=self
+        ):
             return
         core.delete_snapshot(snap)
         self.refresh_snapshots()
@@ -627,7 +659,7 @@ class SaveKeeperApp(tk.Tk):
             name = name_var.get().strip()
             path = path_var.get().strip()
             if not name or not path:
-                messagebox.showwarning("SaveKeeper", "名称和目录都要填写")
+                messagebox.showwarning("SaveKeeper", "名称和目录都要填写", parent=dialog)
                 return
             self.cfg.add_custom_game(name, path)
             cfg_mod.save(self.cfg)
