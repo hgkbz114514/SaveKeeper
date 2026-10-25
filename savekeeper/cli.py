@@ -138,6 +138,60 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 0 if report.ok else 2
 
 
+def _restore_one(game_id: str, snap_name: str) -> int:
+    """校验 + 自动备份 + 覆盖。swap / latest 共用。"""
+    cfg, catalog = _load()
+    resolved = _resolve(cfg, catalog, game_id)
+    snap = cfg.backup_dir() / game_id / snap_name
+    if not snap.is_dir():
+        print(f"[中止] 快照不存在：{snap}", file=sys.stderr)
+        return 2
+    try:
+        report = core.restore_snapshot(
+            snap, resolved, cfg.backup_dir(), game_id, catalog[game_id].name
+        )
+    except core.IntegrityError as exc:
+        print(f"[中止] {exc}", file=sys.stderr)
+        return 2
+    print(report.message)
+    if report.safety_backup:
+        print(f"导入前自动备份：{report.safety_backup.name}（可回退）")
+    return 0
+
+
+def cmd_swap(args: argparse.Namespace) -> int:
+    return _restore_one(args.game, args.snapshot)
+
+
+def cmd_latest(args: argparse.Namespace) -> int:
+    cfg, _ = _load()
+    snaps = core.list_snapshots(cfg.backup_dir(), args.game)
+    if not snaps:
+        print(f"[中止] {args.game} 还没有任何快照，先跑一次 export", file=sys.stderr)
+        return 2
+    usable = [s for s in snaps if s["ok"]]
+    if not usable:
+        print(f"[中止] {args.game} 的快照全部校验失败，不敢覆盖", file=sys.stderr)
+        return 2
+    print(f"→ 使用最新可用快照：{usable[0]['name']}")
+    return _restore_one(args.game, usable[0]["name"])
+
+
+def cmd_export_snapshot(args: argparse.Namespace) -> int:
+    cfg, _ = _load()
+    snap = cfg.backup_dir() / args.game / args.snapshot
+    if not snap.is_dir():
+        print(f"[中止] 快照不存在：{snap}", file=sys.stderr)
+        return 2
+    try:
+        report = core.export_snapshot_to(snap, Path(args.dest))
+    except core.IntegrityError as exc:
+        print(f"[中止] {exc}", file=sys.stderr)
+        return 2
+    print(report.message)
+    return 0
+
+
 def cmd_add(args: argparse.Namespace) -> int:
     cfg = cfg_mod.load()
     cfg.add_custom_game(args.name, args.path)
@@ -295,6 +349,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("verify", help="校验快照完整性")
     sp.add_argument("path")
     sp.set_defaults(func=cmd_verify)
+
+    sp = sub.add_parser(
+        "swap",
+        help="一步换档：校验 → 自动备份当前存档 → 覆盖（就是「导入」的短路径）",
+    )
+    sp.add_argument("game")
+    sp.add_argument("snapshot", help="快照目录名（snapshots 输出的第一列）")
+    sp.set_defaults(func=cmd_swap)
+
+    sp = sub.add_parser("latest", help="直接换到最新一个快照（回滚用）")
+    sp.add_argument("game")
+    sp.set_defaults(func=cmd_latest)
+
+    sp = sub.add_parser("export-snapshot", help="把快照导成一个独立文件夹（发给别人/传网盘）")
+    sp.add_argument("game")
+    sp.add_argument("snapshot")
+    sp.add_argument("dest", help="导出到哪个文件夹")
+    sp.set_defaults(func=cmd_export_snapshot)
 
     sp = sub.add_parser("add", help="添加自定义游戏")
     sp.add_argument("name")

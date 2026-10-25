@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import threading
 import tkinter as tk
@@ -58,7 +59,7 @@ class SaveKeeperApp(tk.Tk):
         body.rowconfigure(0, weight=1)
 
         # ---------------- 左：游戏列表 ----------------
-        left = ttk.LabelFrame(body, text="① 选择游戏", padding=6)
+        left = ttk.LabelFrame(body, text="① 选择游戏（双击 = 打开存档目录）", padding=6)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
         left.rowconfigure(0, weight=1)
         left.columnconfigure(0, weight=1)
@@ -69,6 +70,8 @@ class SaveKeeperApp(tk.Tk):
         sb.grid(row=0, column=1, sticky="ns")
         self.game_list.configure(yscrollcommand=sb.set)
         self.game_list.bind("<<ListboxSelect>>", lambda _e: self.on_select())
+        # 双击游戏 = 直接打开存档目录，不用再去右边找按钮
+        self.game_list.bind("<Double-Button-1>", lambda _e: self.open_dir())
 
         # ---------------- 右：当前游戏 + 操作 ----------------
         right = ttk.Frame(body)
@@ -104,7 +107,7 @@ class SaveKeeperApp(tk.Tk):
         )
 
         # ---------------- 备份列表 ----------------
-        bframe = ttk.LabelFrame(right, text="② 备份快照（导入 = 选中后点「导入存档」）", padding=6)
+        bframe = ttk.LabelFrame(right, text="② 备份快照（双击 = 直接换档，右键更多）", padding=6)
         bframe.grid(row=2, column=0, sticky="nsew", pady=(6, 0))
         bframe.rowconfigure(0, weight=1)
         bframe.columnconfigure(0, weight=1)
@@ -124,6 +127,10 @@ class SaveKeeperApp(tk.Tk):
         sb2 = ttk.Scrollbar(bframe, orient="vertical", command=self.snap_tree.yview)
         sb2.grid(row=0, column=1, sticky="ns")
         self.snap_tree.configure(yscrollcommand=sb2.set)
+
+        # 双击快照 = 直接换档。这是最高频的动作，不该让人先选中再找按钮。
+        self.snap_tree.bind("<Double-Button-1>", lambda _e: self.restore(confirm=False))
+        self._build_snap_menu()
 
         bottom = ttk.Frame(bframe)
         bottom.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
@@ -251,6 +258,24 @@ class SaveKeeperApp(tk.Tk):
         sel = self.snap_tree.selection()
         return Path(sel[0]) if sel else None
 
+    def _build_snap_menu(self) -> None:
+        """快照右键菜单。双击已经能换档，这里补上「导出成文件夹」这类不常用但必要的动作。"""
+        self.snap_menu = tk.Menu(self, tearoff=0)
+        self.snap_menu.add_command(label="导入这个存档（换档）", command=self.restore)
+        self.snap_menu.add_command(label="导出成一个文件夹…", command=self.export_snapshot)
+        self.snap_menu.add_separator()
+        self.snap_menu.add_command(label="在资源管理器里查看", command=self.reveal_snapshot)
+        self.snap_menu.add_command(label="删除这个快照", command=self.delete_snapshot)
+
+        def popup(event: tk.Event) -> None:
+            row = self.snap_tree.identify_row(event.y)
+            if not row:
+                return
+            self.snap_tree.selection_set(row)
+            self.snap_menu.tk_popup(event.x_root, event.y_root)
+
+        self.snap_tree.bind("<Button-3>", popup)
+
     # -------------------------------------------------------------- actions
     def _run(self, title: str, fn) -> None:
         if self._busy:
@@ -296,16 +321,31 @@ class SaveKeeperApp(tk.Tk):
 
         self._run("导出存档", job)
 
-    def restore(self) -> None:
+    def restore(self, confirm: bool = True) -> None:
         game = self.current_game()
         path = self.current_path()
         snap = self.selected_snapshot()
         if game is None:
             return
         if snap is None:
-            messagebox.showwarning("SaveKeeper", "请先在下方列表选中一个备份快照")
+            messagebox.showwarning("SaveKeeper", "请先在下方列表双击（或用右键菜单）选一个备份快照")
             return
-        if not messagebox.askyesno(
+
+        # 游戏还开着的时候换档没有意义：多数游戏退出时会把内存里的存档写回去，
+        # 覆盖掉刚换好的文件。先拦住，这比事后解释为什么没生效有价值。
+        running = self._running_process(game)
+        if running:
+            messagebox.showwarning(
+                "SaveKeeper",
+                f"检测到 {running} 正在运行。\n\n"
+                "先完全退出游戏再换档 —— 多数游戏退出时会把内存里的存档写回去，"
+                "刚换好的文件会被覆盖。",
+            )
+            return
+
+        # 双击是明确的意图，而且导入前会自动备份、可回退，所以不打断；
+        # 走按钮时仍然问一次，避免手滑。
+        if confirm and not messagebox.askyesno(
             "确认导入",
             f"将用快照「{snap.name}」覆盖当前存档。\n"
             f"导入前会自动备份当前存档，可随时回退。\n\n继续？",
@@ -320,6 +360,52 @@ class SaveKeeperApp(tk.Tk):
             return report.message + (f"（自动备份：{report.safety_backup.name}）" if report.safety_backup else "")
 
         self._run("导入存档", job)
+
+    def _running_process(self, game: games_mod.Game) -> str:
+        """游戏正在跑就返回进程名，否则返回空串。只按进程名匹配，不碰内存。"""
+        wanted = {game.name.lower(), (game.id or "").lower()}
+        try:
+            out = subprocess.run(
+                ["tasklist", "/fo", "csv", "/nh"],
+                capture_output=True, text=True, timeout=6,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        for line in out.splitlines():
+            cols = [c.strip('" ') for c in line.split('","')]
+            if not cols or not cols[0]:
+                continue
+            exe = cols[0].lower()
+            stem = exe[:-4] if exe.endswith(".exe") else exe
+            # 用「名字包含」而不是相等：Exe 名常是 HogwartsLegacy-Win64-Shipping 这种
+            for key in wanted:
+                key = key.replace(" ", "")
+                if len(key) >= 4 and key in stem.replace(" ", ""):
+                    return cols[0]
+        return ""
+
+    def reveal_snapshot(self) -> None:
+        snap = self.selected_snapshot()
+        if snap is None:
+            return
+        paths.open_in_explorer(snap)
+
+    def export_snapshot(self) -> None:
+        """把快照导成一个独立文件夹，用于发给别人或存到网盘。"""
+        snap = self.selected_snapshot()
+        if snap is None:
+            messagebox.showwarning("SaveKeeper", "请先选中一个快照")
+            return
+        target = filedialog.askdirectory(title="把快照导出到哪个文件夹")
+        if not target:
+            return
+
+        def job() -> str:
+            report = core.export_snapshot_to(snap, Path(target))
+            return report.message
+
+        self._run("导出快照", job)
 
     def _ask_target(self, game: games_mod.Game) -> Path:
         directory = filedialog.askdirectory(title=f"选择 {game.name} 的存档目录")

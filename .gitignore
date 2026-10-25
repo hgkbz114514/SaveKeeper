@@ -17,4 +17,8 @@ Thumbs.db
 # 演示数据（demo_setup.py 生成，不入库）
 demo-home/
 demo-save/
+demo-out/
 .runtime-tmp/
+
+# 截图中间产物，README 只用 assets/screenshot.png
+assets/screenshot-main.png

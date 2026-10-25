@@ -401,3 +401,49 @@ def list_snapshots(backup_root: Path, game_id: str) -> list[dict[str, Any]]:
 
 def delete_snapshot(snapshot_dir: Path) -> None:
     shutil.rmtree(Path(snapshot_dir))
+
+
+def export_snapshot_to(snapshot_dir: Path, dest_dir: Path) -> RestoreReport:
+    """把快照里的存档文件摊平复制到 dest_dir，用于发给别人 / 传网盘。
+
+    只复制 ``data/`` 下的存档本体，不复制 manifest.json —— 对方要的是能直接
+    丢进游戏目录的文件，不是 SaveKeeper 的内部结构。目标重名时落到
+    ``<快照名>/`` 子目录，避免把用户自己挑的文件夹搅乱。
+    """
+    snapshot_dir = Path(snapshot_dir)
+    dest_dir = Path(dest_dir)
+    check = verify_snapshot(snapshot_dir)
+    if not check.ok:
+        raise IntegrityError(
+            "快照已损坏，已阻止导出：\n- " + "\n- ".join(check.errors[:10])
+        )
+
+    data_dir = snapshot_dir / DATA_DIR
+    if not data_dir.is_dir():
+        raise IntegrityError(f"快照里没有 {DATA_DIR}/ 目录：{snapshot_dir}")
+
+    # 目标目录已有同名文件就把东西放进子目录，别去覆盖用户别的东西
+    top_names = {p.name for p in data_dir.iterdir()}
+    clashes = any((dest_dir / n).exists() for n in top_names)
+    out_dir = dest_dir / snapshot_dir.name if clashes else dest_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    copied = 0
+    copied_bytes = 0
+    for dirpath, _dirs, filenames in os.walk(data_dir):
+        base = Path(dirpath)
+        for name in filenames:
+            rel = (base / name).relative_to(data_dir)
+            dst = out_dir / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(base / name, dst)
+            copied += 1
+            copied_bytes += dst.stat().st_size
+
+    return RestoreReport(
+        ok=True,
+        target=out_dir,
+        restored_files=copied,
+        restored_bytes=copied_bytes,
+        message=f"已导出 {copied} 个文件（{copied_bytes} 字节）到 {out_dir}",
+    )
