@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import threading
@@ -10,7 +11,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from . import config as cfg_mod
-from . import core, games as games_mod, installscan, paths
+from . import core, games as games_mod, installscan, paths, zipimport as zip_mod
 
 
 class SaveKeeperApp(tk.Tk):
@@ -419,19 +420,61 @@ class SaveKeeperApp(tk.Tk):
         game = self.current_game()
         if game is None:
             return
-        directory = filedialog.askdirectory(title="选择要导入的存档文件夹")
-        if not directory:
+        chosen = filedialog.askopenfilename(
+            title="选择要导入的存档（zip 或任意文件夹里的存档文件）",
+            filetypes=[("压缩包", "*.zip"), ("全部文件", "*.*")],
+        )
+        if not chosen:
             return
-        target = self.current_path() or self._ask_target(game)
-        if not messagebox.askyesno(
-            "确认导入",
-            f"将用「{directory}」覆盖当前存档。\n导入前会自动备份当前存档。\n\n继续？",
-        ):
+        src = Path(chosen)
+        stage: Path | None = None
+        try:
+            if src.suffix.lower() == ".zip":
+                stage = zip_mod.stage_temp_dir()
+                try:
+                    zip_mod.extract_zip(src, stage)
+                except zip_mod.ArchiveError as exc:
+                    messagebox.showerror("导入存档", str(exc))
+                    return
+                source, why = zip_mod.pick_save_subdir(stage)
+                if source != stage:
+                    messagebox.showinfo("已自动定位存档目录", why)
+            else:
+                # 单文件拖入：把它放进一个临时目录再走统一流程
+                stage = zip_mod.stage_temp_dir()
+                shutil.copy2(src, stage / src.name)
+                source = stage
+            target = self.current_path() or self._ask_target(game)
+            self._confirm_import(game, source, target)
+        finally:
+            if stage is not None:
+                zip_mod.cleanup_dir(stage)
+
+    def _confirm_import(self, game, source: Path, target: Path) -> None:
+        """展示差异预览，确认后导入。"""
+        preview = zip_mod.preview_diff(source, target)
+        if preview.n_entries == 0:
+            messagebox.showwarning(
+                "SaveKeeper",
+                "这个目录里没有要导入的文件。\n"
+                "如果下载的是 zip，直接选 zip 即可，软件会自动解压定位。",
+            )
+            return
+        lines = [f"来源：{source}"]
+        lines.append(preview.summary())
+        if preview.replace_n:
+            sample = [e.rel for e in preview.entries if e.kind == "replace"][:5]
+            lines.append("\n将替换：\n  " + "\n  ".join(sample))
+        if preview.new_n:
+            sample = [e.rel for e in preview.entries if e.kind == "new"][:5]
+            lines.append("\n将新增：\n  " + "\n  ".join(sample))
+        lines.append("\n导入前会自动备份当前存档，可随时回退。")
+        if not messagebox.askyesno("确认导入", "\n".join(lines)):
             return
 
         def job() -> str:
             report = core.import_directory(
-                Path(directory), target, self.cfg.backup_dir(), game.id, game.name
+                source, target, self.cfg.backup_dir(), game.id, game.name
             )
             return report.message
 

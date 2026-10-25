@@ -6,7 +6,7 @@
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-lightgrey)
 ![Deps](https://img.shields.io/badge/runtime%20deps-0-success)
-![Tests](https://img.shields.io/badge/tests-47%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-60%20passed-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ![SaveKeeper 主界面](assets/screenshot.png)
@@ -24,7 +24,7 @@ SaveKeeper 把这件事压缩成两步：**选游戏 → 点按钮**。
 |---|---|
 | 📂 **一键打开存档目录** | 自动检测，直接定位到存档所在文件夹；**双击游戏名就开** |
 | ⬇ **导出存档** | 完整快照存档目录，带 SHA-256 清单 |
-| ⬆ **导入存档** | **双击快照直接换档**；导入前自动备份当前存档，随时可回退 |
+| ⬆ **导入存档** | **直接选 zip**：自动解压、自动定位存档子目录、**导入前预览差异**；导入前自动备份当前存档，随时可回退；**双击快照直接换档** |
 | 🛡 **游戏运行时就拦住** | 检测到游戏进程在跑会阻止换档 —— 否则退出时内存存档会覆盖掉刚换好的文件 |
 | 📤 **导出快照成文件夹** | 把一个备份导成普通文件夹，方便发给别人或传网盘 |
 | 🔍 **完整性校验** | 导入前逐文件校验 SHA-256，校验失败**阻止覆盖**并报错 |
@@ -372,6 +372,7 @@ savekeeper/
 
 ## 更新记录
 
+- **0.4.0** —— 换档更省事：导入**直接选 zip**（自动安全解压 + 自动剥包装目录定位存档子目录）、**导入前预览差异**（替换几个/新增几个，不再是无解释的确认框）、单个存档文件直接拖入也能导；测试 47 → 60 个
 - **0.3.0** —— 换档更顺手：快照**双击直接换档**、游戏运行时拦截换档、右键菜单（导出成文件夹 / 查看 / 删除）、双击游戏名直接打开存档目录；新增 `swap` / `latest` / `export-snapshot` 三个 CLI 子命令
 - **0.2.0** —— 自动发现能力：`scan` 扫描本机已装游戏、`scan-install` 从游戏本体目录反推存档（覆盖绿色版/破解版）、`recent` 查看近期活跃存档；GUI 加「＋ 从游戏文件夹添加」；修掉占位模板档压过真存档、崩溃日志目录被当存档、Steam 保留 appid 被当游戏等问题
 - **0.1.0** —— 首个版本：73 款内置游戏路径、快照导出/还原/校验、GUI + CLI、打包脚本
