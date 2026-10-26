@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -401,6 +402,68 @@ def list_snapshots(backup_root: Path, game_id: str) -> list[dict[str, Any]]:
 
 def delete_snapshot(snapshot_dir: Path) -> None:
     shutil.rmtree(Path(snapshot_dir))
+
+
+_TS_IN_NAME = re.compile(r"(\d{8}_\d{6})(?:_\d+)?$")
+
+
+def snapshot_timestamp(snapshot_dir: Path) -> str:
+    """从快照文件夹名里取出时间戳部分；取不到就退化到 manifest 的 created_at。"""
+    match = _TS_IN_NAME.search(Path(snapshot_dir).name)
+    if match:
+        return match.group(1)
+    manifest_path = Path(snapshot_dir) / MANIFEST_NAME
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        raw = str(manifest.get("created_at", ""))
+        stamp = datetime.fromisoformat(raw)
+        return stamp.strftime("%Y%m%d_%H%M%S")
+    except (OSError, json.JSONDecodeError, ValueError):
+        return _timestamp()
+
+
+def rename_snapshot(snapshot_dir: Path, new_label: str) -> Path:
+    """改快照的备注名，同时把文件夹名跟着改，返回新的快照目录。
+
+    名字的权威来源是 manifest 里的 ``label``（可以存中文原文）；
+    文件夹名只是给人看的，所以要跟着一起改，否则备份目录里一堆
+    ``20261025_211235`` 根本分不清哪个是哪个。
+    """
+    snapshot_dir = Path(snapshot_dir)
+    manifest_path = snapshot_dir / MANIFEST_NAME
+    if not manifest_path.is_file():
+        raise IntegrityError(f"缺少 {MANIFEST_NAME}，这不是一个有效的 SaveKeeper 快照")
+
+    label = new_label.strip()
+    safe = _safe_label(label)
+    stamp = snapshot_timestamp(snapshot_dir)
+    new_name = f"{safe}_{stamp}" if safe else stamp
+
+    target = snapshot_dir.parent / new_name
+    # 同名已存在就退到 _unique_dir，绝不动别人的快照
+    if target.resolve() != snapshot_dir.resolve():
+        target = _unique_dir(snapshot_dir.parent / new_name)
+
+    if target != snapshot_dir:
+        snapshot_dir.rename(target)
+        manifest_path = target / MANIFEST_NAME
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["label"] = label
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        # 清单写不进去就把文件夹改回去，别留一个改了一半的状态
+        if target != snapshot_dir:
+            try:
+                target.rename(snapshot_dir)
+            except OSError:
+                pass
+        raise IntegrityError(f"写入 {MANIFEST_NAME} 失败：{exc}") from exc
+
+    return target
 
 
 def export_snapshot_to(snapshot_dir: Path, dest_dir: Path) -> RestoreReport:

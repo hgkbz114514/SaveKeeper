@@ -192,6 +192,24 @@ def cmd_export_snapshot(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rename(args: argparse.Namespace) -> int:
+    cfg, _ = _load()
+    snap = cfg.backup_dir() / args.game / args.snapshot
+    if not snap.is_dir():
+        print(f"[中止] 快照不存在：{snap}", file=sys.stderr)
+        return 2
+    try:
+        new_path = core.rename_snapshot(snap, args.label)
+    except (OSError, core.IntegrityError) as exc:
+        print(f"[中止] {exc}", file=sys.stderr)
+        return 2
+    if new_path == snap:
+        print(f"已重命名（文件夹名不变）：{new_path.name}")
+    else:
+        print(f"已重命名：{snap.name} → {new_path.name}")
+    return 0
+
+
 def cmd_add(args: argparse.Namespace) -> int:
     cfg = cfg_mod.load()
     cfg.add_custom_game(args.name, args.path)
@@ -385,6 +403,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("snapshot")
     sp.add_argument("dest", help="导出到哪个文件夹")
     sp.set_defaults(func=cmd_export_snapshot)
+
+    sp = sub.add_parser("rename", help="给已有快照改名（文件夹名跟着改）")
+    sp.add_argument("game")
+    sp.add_argument("snapshot", help="快照目录名（snapshots 输出的第一列）")
+    sp.add_argument("label", help="新名字；给空串则只保留时间戳")
+    sp.set_defaults(func=cmd_rename)
 
     sp = sub.add_parser("add", help="添加自定义游戏")
     sp.add_argument("name")

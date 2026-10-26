@@ -277,6 +277,7 @@ class SaveKeeperApp(tk.Tk):
         """快照右键菜单。双击已经能换档，这里补上「导出成文件夹」这类不常用但必要的动作。"""
         self.snap_menu = tk.Menu(self, tearoff=0)
         self.snap_menu.add_command(label="导入这个存档（换档）", command=self.restore)
+        self.snap_menu.add_command(label="重命名这个快照…", command=self.rename_snapshot)
         self.snap_menu.add_command(label="导出成一个文件夹…", command=self.export_snapshot)
         self.snap_menu.add_separator()
         self.snap_menu.add_command(label="在资源管理器里查看", command=self.reveal_snapshot)
@@ -292,6 +293,21 @@ class SaveKeeperApp(tk.Tk):
         self.snap_tree.bind("<Button-3>", popup)
 
     # -------------------------------------------------------------- actions
+    def _error_box(self, title: str, message: str) -> None:
+        messagebox.showerror(title, message, parent=self)
+
+    def _ui(self, fn, *args) -> None:
+        """把回调排进 UI 线程；窗口已经销毁时安静丢弃。
+
+        后台线程跑完一定要回主线程改界面，但用户可能中途就把窗口关了 ——
+        这时 ``self.after`` 会抛 ``RuntimeError: main thread is not in main loop``，
+        线程里的 traceback 帮不上任何人，反而吓人。所有跨线程回调都走这里。
+        """
+        try:
+            self.after(0, lambda: fn(*args))
+        except (RuntimeError, tk.TclError):
+            pass
+
     def _run(self, title: str, fn) -> None:
         if self._busy:
             return
@@ -316,18 +332,15 @@ class SaveKeeperApp(tk.Tk):
                 except Exception:  # noqa: BLE001
                     pass
                 if blocked_path and backup_root and blocked_path.startswith(backup_root):
-                    self.after(0, lambda: self._backup_root_blocked(title, fn, blocked_exc))
+                    self._ui(self._backup_root_blocked, title, fn, blocked_exc)
                 else:
-                    self.after(
-                        0,
-                        lambda: self._archive_dir_blocked(title, blocked_exc, blocked_path),
-                    )
+                    self._ui(self._archive_dir_blocked, title, blocked_exc, blocked_path)
             except Exception as exc:  # noqa: BLE001
-                self.after(0, lambda: messagebox.showerror(title, str(exc), parent=self))
-                self.after(0, lambda: self.set_status(f"{title}失败"))
+                self._ui(self._error_box, title, str(exc))
+                self._ui(self.set_status, f"{title}失败")
             else:
-                self.after(0, lambda: self.set_status(message))
-                self.after(0, self.refresh_snapshots)
+                self._ui(self.set_status, message)
+                self._ui(self.refresh_snapshots)
             finally:
                 self._busy = False
 
@@ -445,14 +458,134 @@ class SaveKeeperApp(tk.Tk):
             self._no_path_help("导出存档")
             return
 
+        # 先问名字：备份完再改就要多一步，而「这个存档是什么"时候"的」正是
+        # 以后能不能找回来的关键。留空也能备份，取消则整个中止。
+        label = self._ask_label()
+        if label is None:
+            self.set_status("已取消导出")
+            return
+
         def job() -> str:
-            snap = core.create_snapshot(path, self.cfg.backup_dir(), game.id, game.name)
+            snap = core.create_snapshot(
+                path, self.cfg.backup_dir(), game.id, game.name, label
+            )
             report = core.verify_snapshot(snap)
             if not report.ok:
                 raise core.IntegrityError(f"已备份但校验失败：\n- " + "\n- ".join(report.errors[:5]))
             return f"已导出 {snap}（{report.file_count} 个文件，校验通过）"
 
         self._run("导出存档", job)
+
+    def rename_snapshot(self) -> None:
+        """给已有快照改名字。文件夹名跟着改，备份目录里才不会一堆时间戳。"""
+        snap = self.selected_snapshot()
+        if snap is None:
+            messagebox.showwarning("SaveKeeper", "请先选中一个快照", parent=self)
+            return
+
+        current = ""
+        for info in core.list_snapshots(self.cfg.backup_dir(), self.current_game().id):
+            if Path(info["path"]) == snap:
+                current = info.get("label") or ""
+                break
+
+        dialog = tk.Toplevel(self)
+        dialog.title("重命名快照")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        ttk.Label(dialog, text="新名字：", font=("", 10, "bold")).pack(
+            anchor="w", padx=12, pady=(12, 4)
+        )
+        var = tk.StringVar(value=current)
+        entry = ttk.Entry(dialog, textvariable=var, width=42)
+        entry.pack(fill="x", padx=12)
+        entry.focus_set()
+        entry.select_range(0, "end")
+        ttk.Label(
+            dialog,
+            text="留空 = 去掉名字，只保留时间戳。文件夹会一起改名，不会动存档内容。",
+            foreground="#888",
+            wraplength=340,
+            justify="left",
+        ).pack(anchor="w", padx=12, pady=(6, 0))
+
+        def submit(_event: object = None) -> None:
+            label = var.get().strip()
+            dialog.destroy()
+            try:
+                new_path = core.rename_snapshot(snap, label)
+            except (OSError, core.IntegrityError) as exc:
+                messagebox.showerror("重命名失败", str(exc), parent=self)
+                self.set_status("重命名失败")
+                return
+            self.refresh_snapshots()
+            self.snap_tree.selection_set(str(new_path))
+            self.set_status(f"已重命名为：{new_path.name}")
+
+        row = ttk.Frame(dialog)
+        row.pack(fill="x", padx=12, pady=(10, 12))
+        ttk.Button(row, text="改名", command=submit).pack(side="right")
+        ttk.Button(row, text="取消", command=dialog.destroy).pack(side="right", padx=(0, 6))
+        dialog.bind("<Return>", submit)
+        dialog.bind("<Escape>", lambda _e: dialog.destroy())
+        dialog.wait_window()
+
+    def _ask_label(self) -> str | None:
+        """问一句备注名。返回 None = 用户取消，返回 "" = 不命名直接备份。"""
+        dialog = tk.Toplevel(self)
+        dialog.title("导出存档")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        ttk.Label(
+            dialog,
+            text="给这份存档起个名字（可留空）",
+            font=("", 10, "bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 2))
+        ttk.Label(
+            dialog,
+            text="比如「打女武神前」「换流派-力量」，以后一眼就能认出是哪个节点。",
+            foreground="#555",
+            wraplength=340,
+            justify="left",
+        ).pack(anchor="w", padx=12)
+
+        var = tk.StringVar()
+        entry = ttk.Entry(dialog, textvariable=var, width=42)
+        entry.pack(fill="x", padx=12, pady=8)
+        entry.focus_set()
+        ttk.Label(
+            dialog,
+            text="留空也能备份，之后在右键菜单里随时重命名。",
+            foreground="#888",
+        ).pack(anchor="w", padx=12)
+
+        result: dict[str, str | None] = {"label": None}
+
+        def ok(_event: object = None) -> None:
+            result["label"] = var.get().strip()
+            dialog.destroy()
+
+        def skip() -> None:
+            result["label"] = ""
+            dialog.destroy()
+
+        def cancel() -> None:
+            result["label"] = None
+            dialog.destroy()
+
+        row = ttk.Frame(dialog)
+        row.pack(fill="x", padx=12, pady=(4, 12))
+        ttk.Button(row, text="备份", command=ok).pack(side="right")
+        ttk.Button(row, text="不命名", command=skip).pack(side="right", padx=(0, 6))
+        ttk.Button(row, text="取消", command=cancel).pack(side="right", padx=(0, 6))
+        dialog.bind("<Return>", ok)
+        dialog.bind("<Escape>", lambda _e: cancel())
+        dialog.wait_window()
+        return result["label"]
 
     def restore(self, confirm: bool = True) -> None:
         game = self.current_game()
