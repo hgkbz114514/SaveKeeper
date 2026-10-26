@@ -171,3 +171,129 @@ def _dir_with(root: Path, sub: str, filename: str) -> Path:
     target = root / sub
     _write(target / filename, b"{}")
     return target
+
+# ------------------------------------------------- 深度 / 模板档 / InternalName
+
+
+def test_deep_save_profile_layout_is_reached(tmp_path: Path) -> None:
+    """真存档藏在 profiles/<id>/cloud/ 时要扫得到（深度 off-by-one 回归）。
+
+    实测原型：E:/300TIAN/C2993「高三最后300天」（Goldberg 破解壳），
+    存档在 %APPDATA%/LIANG/Gaosan300/profiles/steam_<id>/cloud/auto.sav。
+    从根算 cloud 是第 3 层，早期 `if depth + 1 < max_depth` 让第 3 层
+    目录里的文件永远不被统计 —— 统计结果是 (1, 0, 0)，0 个文件。
+    """
+    root = tmp_path / "Gaosan300"
+    _write(root / "profiles" / "steam_76561198123519615" / "cloud" / "auto.sav", b"\0" * 1_100_000)
+    _write(root / "profiles" / "steam_76561198123519615" / "cloud" / "profile.sav", b"\0" * 44_000)
+
+    strength, nfiles, nbytes = installscan._scan_save_stats(root)
+    assert nfiles == 2, f"第 3 层的存档文件必须被统计到，实际 {nfiles} 个"
+    assert nbytes > 1_000_000
+    assert strength == 2
+
+
+def test_auto_only_saves_are_flagged_as_template(tmp_path: Path) -> None:
+    """只有 auto-*.save、没有任何玩家手动存档 → 判为随包分发的模板档。
+
+    实测原型：and Roger / Outer Wilds / Hogwarts Legacy / MillenniumDream
+    四款不同游戏的 game/saves/auto-1-LT1.save 逐字节完全相同
+    （SHA-256 3ce21cb384e46d86068f94e7...），且都只有 auto-* + persistent。
+    """
+    saves = tmp_path / "game" / "saves"
+    for i in range(1, 4):
+        _write(saves / f"auto-{i}-LT1.save", b"PK\x03\x04" + b"\0" * 300_000)
+    _write(saves / "persistent", b"\0" * 1000)
+
+    assert installscan._looks_like_bundled_template(saves) is True
+
+
+def test_manual_save_disables_template_flag(tmp_path: Path) -> None:
+    """有玩家手动存档（Ren'Py 的 <n>-<n>-LT1.save）就不再是模板。"""
+    saves = tmp_path / "game" / "saves"
+    _write(saves / "auto-1-LT1.save", b"\0" * 300_000)
+    _write(saves / "1-1-LT1.save", b"\0" * 300_000)
+
+    assert installscan._looks_like_bundled_template(saves) is False
+
+
+def test_engine_info_carries_internal_name() -> None:
+    """PE 的 InternalName 要能被 EngineInfo 携带，供反查名字候选使用。
+
+    实测原型：「高三最后300天」的 CompanyName=LIANG、InternalName=Gaosan300，
+    显示名与产品名都猜不到目录，只有 InternalName 对得上
+    AppData/Roaming/LIANG/Gaosan300。
+    """
+    info = installscan.EngineInfo(company="LIANG", product="高三最后300天")
+    info.internal = "Gaosan300"
+    assert info.internal == "Gaosan300"
+    assert installscan.EngineInfo().internal == ""
+
+# --------------------------------------- 主程序识别 / 空壳目录如实告知
+
+
+def test_mod_manager_exe_is_not_the_main_exe(tmp_path: Path) -> None:
+    """ModManager.UI.exe 不能被当成游戏主程序。
+
+    实测原型：Red Dead Redemption 2 目录只剩 LML mod 残留，唯一"正常"的 exe 是
+    ModManager/ModManager.UI.exe（154 KB），它被选成主程序后 product 变成
+    'ModManager.UILauncher'，后续 AppData 反查名字全错。
+    """
+    game = tmp_path / "RDR2"
+    _write(game / "ModManager" / "ModManager.UI.exe", b"MZ" + b"\0" * 150_000)
+    _write(game / "RedDeadRedemption2.exe", b"MZ" + b"\0" * 40_000_000)
+
+    picked = installscan.guess_main_exe(game)
+    assert picked is not None
+    assert picked.name.lower() == "reddeadredemption2.exe", (
+        f"应选真正的主程序，实际选了 {picked}"
+    )
+
+
+def test_redist_exe_is_skipped_by_path(tmp_path: Path) -> None:
+    """运行库目录里的 exe 靠**目录名**排除，不只看文件名。
+
+    实测：Red Dead Redemption 2 里 ``FOR ERRORS\\REDIST\\vcredist2015_2017_2019_x64.exe``
+    有 15 MB，比 ModManager.UI.exe 还大，且文件名不含 _NOT_MAIN_EXE 里的常见词以外
+    匹配不稳——必须用相对路径判断。
+    """
+    game = tmp_path / "G"
+    _write(game / "FOR ERRORS" / "REDIST" / "vcredist2015_2017_2019_x64.exe", b"MZ" + b"\0" * 15_000_000)
+    _write(game / "Game.exe", b"MZ" + b"\0" * 25_000_000)
+
+    picked = installscan.guess_main_exe(game)
+    assert picked is not None
+    assert picked.name.lower() == "game.exe"
+
+
+def test_empty_shell_dir_is_reported_honestly(tmp_path: Path) -> None:
+    """空壳目录要说「这里没有游戏本体」，而不是含糊的「未识别出引擎」。
+
+    实测：本机 steamapps/common 下 TSUGUNOHI / WormsWMD 各只有 1 个空目录，
+    高三最后300天 是 0 个文件。
+    """
+    empty = tmp_path / "TSugunohi"
+    (empty / "gamedata").mkdir(parents=True)
+
+    scan = installscan.scan_install_dir(empty)
+    assert scan.ok is False
+    assert "没有游戏本体" in scan.reason, f"实际原因：{scan.reason}"
+
+
+def test_real_game_body_is_not_flagged_as_shell(tmp_path: Path) -> None:
+    """有 20 MB 以上主程序的目录不能被误判成空壳。"""
+    game = tmp_path / "G"
+    _write(game / "Game.exe", b"MZ" + b"\0" * 25_000_000)
+
+    ok, why = installscan._dir_looks_like_game_body(game)
+    assert ok is True, why
+
+
+def test_summary_prints_reason_when_not_determined(tmp_path: Path) -> None:
+    """未确定时 summary 必须把原因打出来（早期只打「未确定」，诊断白做）。"""
+    empty = tmp_path / "E"
+    empty.mkdir()
+    scan = installscan.scan_install_dir(empty)
+    text = scan.summary()
+    assert "存档目录：未确定" in text
+    assert "原因：" in text

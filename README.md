@@ -6,7 +6,7 @@
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-lightgrey)
 ![Deps](https://img.shields.io/badge/runtime%20deps-0-success)
-![Tests](https://img.shields.io/badge/tests-60%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-69%20passed-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ![SaveKeeper 主界面](assets/screenshot.png)
@@ -373,6 +373,7 @@ savekeeper/
 
 ## 更新记录
 
+- **0.4.6** —— 小众游戏与破解版（绿色版）的存档反推，修掉三个真缺陷：**深度差一层**（`_scan_save_stats` 写成 `depth + 1 < max_depth`，第 `max_depth` 层目录里的文件永远统计不到，实测「高三最后300天」的存档在 `profiles/<steam_id>/cloud/*.sav` 第 3 层，旧版统计出 0 个文件）；**PE 的 InternalName 没参与反查**（该游戏存档在 `%APPDATA%/LIANG/Gaosan300`，公司名 `LIANG` 与产品名都猜不出目录，只有 `InternalName=Gaosan300` 对得上）；**模板档冒充真存档**（多款 Ren'Py 游戏的 `game/saves/auto-1-LT1.save` 逐字节相同，现在只有 `auto-*.save` 且无玩家手动存档时降级为「疑似模板」并把 AppData 反查结果放候选第一位）。顺带：主程序识别不再把 mod 工具当游戏（RDR2 只剩 LML 残留时会选中 `ModManager/ModManager.UI.exe`）；目录里没有游戏本体时直说「似乎没有游戏本体」而不是笼统的「未识别出引擎」，未确定时也会打印原因。测试 64 → 69 个
 - **0.4.5** —— 导入被拦时不再让你瞎换备份位置：现在会分清「备份目录被拦」（换位置自救）和「游戏存档目录被拦」（备份位置怎么换都没用），后者直接引导**以管理员身份重启**，一次点选完成，重启后再操作一次即可。
 - **0.4.4** —— 备份目录预检与自救升级：启动时先实测备份目录可写，被杀软拦截立刻弹窗引导，不再等点了导出才报错；实测火绒只放行程序写自己所在目录，打包版自动把「exe 同目录」加入备份候选，自救框直接推荐可用的位置。
 - **0.4.3** —— 自签名代码签名证书（assets/SaveKeeperDev.cer，可自行导入信任）：降低被杀软启发式拦截的概率；备份目录被拦时仍可一键自救。

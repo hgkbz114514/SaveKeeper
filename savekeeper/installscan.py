@@ -107,6 +107,19 @@ _NOT_MAIN_EXE = (
     "unins", "setup", "crash", "report", "handler", "launcher_installer",
     "vcredist", "dxsetup", "dotnet", "activation", "register", "eulaupdate",
     "unitycrashhandler", "fmod", "easyanticheat", "be_service", "battleye",
+    # mod 管理器 / 画质补丁 / 代理注入——它们住在本体目录里，但绝不是游戏主程序。
+    # 实测 RDR2：本体被删只剩 LML 残留，最大且唯一的"正常"exe 是
+    # ModManager\ModManager.UI.exe（154 KB）→ 被选成主程序，product 变成
+    # 'ModManager.UILauncher'，后续反查名字全错。
+    "modmanager", "mod_manager", "modloader", "flmodmanager",
+    "lml", "rampage", "reshade", "sweetfx", "injector", "proxy",
+)
+
+# 这些目录里的 exe 一定不是主程序（运行库/安装包/mod 工具）
+_NOT_MAIN_DIRS = (
+    "redist", "_redist", "redistributables", "commonredist", "installers",
+    "installer", "mods", "mod", "lml", "modmanager", "rampagefiles",
+    "for errors", "dxsetup", "directx", "vcredist",
 )
 
 
@@ -266,6 +279,7 @@ class EngineInfo:
     exe: Path | None = None   # 猜测的主程序
     company: str = ""
     product: str = ""
+    internal: str = ""        # PE 的 InternalName：破解版/小众游戏常靠它才对得上 AppData 目录名
 
 
 def _safe_dirs(path: Path) -> list[Path]:
@@ -282,6 +296,16 @@ def _safe_files(path: Path) -> list[Path]:
         return []
 
 
+def _in_helper_dir(rel: Path) -> bool:
+    """exe 的相对路径里有没有"这不是游戏本体"的目录名。"""
+    parts = [p.lower() for p in rel.parts[:-1]]
+    for part in parts:
+        for bad in _NOT_MAIN_DIRS:
+            if bad in part:
+                return True
+    return False
+
+
 def guess_main_exe(install_dir: Path, max_depth: int = 2) -> Path | None:
     """挑一个最像主程序的 exe：优先本体根目录、体积大、名字不含 unins/crash。"""
     best: tuple[int, Path] | None = None
@@ -294,6 +318,14 @@ def guess_main_exe(install_dir: Path, max_depth: int = 2) -> Path | None:
                 continue
             if any(bad in low for bad in _NOT_MAIN_EXE):
                 continue
+            # 路径层面的排除：redist\ / MODS\ / ModManager\ 里的 exe 不是主程序。
+            # 只看文件名会漏 —— ModManager.UI.exe 名字里虽有 modmanager（已被上面拦下），
+            # 但类似 CommonRedist\vcredist\xxx.exe 这类还得靠目录名。
+            try:
+                if _in_helper_dir(f.relative_to(install_dir)):
+                    continue
+            except ValueError:
+                pass
             try:
                 size = f.stat().st_size
             except OSError:
@@ -362,6 +394,8 @@ def _fill_version(info: EngineInfo, install_dir: Path) -> EngineInfo:
         if ver:
             info.company = ver.get("CompanyName", "") or ""
             info.product = info.product or ver.get("ProductName", "") or ""
+            # InternalName 是 exe 原名（如 Gaosan300），存档目录常用它而不是显示名
+            info.internal = ver.get("InternalName", "") or ""
             if not info.name and "unity" in (ver.get("FileDescription", "") + ver.get("InternalName", "")).lower():
                 info.name = "unity"
             if not info.name and "unreal" in ver.get("FileDescription", "").lower():
@@ -537,7 +571,12 @@ def _scan_save_stats(path: Path, max_depth: int = 3) -> tuple[int, int, int]:
                                 continue
                             if _SLOT_DIR.match(entry.name):
                                 slot_dirs += 1
-                            if depth + 1 < max_depth:
+                            # `<=` 而不是 `<`：depth 是**当前目录**的层级，
+                            # 第 max_depth 层目录里的文件仍属于扫描范围。
+                            # 实测（高三最后300天）：真存档在
+                            # profiles/<steam_id>/cloud/*.sav（第 3 层），
+                            # 用 `<` 时 0 个文件，用 `<=` 才是 3 个文件 1.2 MB。
+                            if depth + 1 <= max_depth:
                                 stack.append((Path(entry.path), depth + 1))
                     except OSError:
                         continue
@@ -598,7 +637,11 @@ class InstallScan:
         if self.ok:
             lines.append(f"存档目录：{self.save_dir}（{self.confidence} · {self.reason}）")
         else:
+            # 未确定时更要把原因说出来——早期这里只打"未确定"，
+            # 于是"这个目录里根本没有游戏本体"的判断被吞掉，用户以为工具无能。
             lines.append("存档目录：未确定")
+            if self.reason:
+                lines.append(f"原因：{self.reason}")
         if self.candidates:
             lines.append("候选：")
             for p, why in self.candidates[:6]:
@@ -696,6 +739,34 @@ def _expand_templates(engine: EngineInfo, game_name: str) -> list[tuple[Path, st
     return out
 
 
+_MANUAL_SAVE_RE = re.compile(r"^\d+-\d+-lt\d+\.save$")
+
+
+def _looks_like_bundled_template(path: Path) -> bool:
+    """本体内这个存档目录是不是「随游戏分发的模板/演示档」。
+
+    实测：四款不同的 Ren'Py 游戏 ``game/saves/auto-1-LT1.save`` 逐字节相同，
+    且都只有 ``auto-*.save`` + ``persistent``，没有一份玩家手动存档。
+    这种目录可以打开给人看，但说"这就是你的存档"会误导 ——
+    玩家真正的进度通常在 ``%APPDATA%/<游戏名>/``。
+    """
+    manual = 0
+    auto = 0
+    try:
+        for entry in os.scandir(path):
+            if not entry.is_file(follow_symlinks=False):
+                continue
+            low = entry.name.lower()
+            if _MANUAL_SAVE_RE.match(low):
+                manual += 1
+            elif low.startswith("auto-") and low.endswith(".save"):
+                auto += 1
+    except OSError:
+        return False
+    # 只有自动存档、一份手动存档都没有 → 更像模板/没玩过
+    return auto >= 1 and manual == 0
+
+
 def _inner_confidence(path: Path) -> bool:
     """本体内部命中的存档目录是否够格给 high 置信度。
 
@@ -706,6 +777,42 @@ def _inner_confidence(path: Path) -> bool:
     if strength < 2:
         return False
     return nfiles >= 2 or nbytes >= 1024 * 1024
+
+
+def _dir_looks_like_game_body(root: Path, max_scan: int = 4000) -> tuple[bool, str]:
+    """目录里有没有"游戏本体"的迹象 → (像不像, 一句话依据)。
+
+    实测：本机 steamapps/common 下有 7 个目录是空壳/只剩 mod 残留
+    （``TSUGUNOHI`` 只有 1 个 gamedata 目录、``Red Dead Redemption 2`` 只剩 LML 的
+    79 个文件、``RESIDENT EVIL 7`` 只有 2 个文件）。反推不出来时如实说
+    "这里没有游戏本体"，比含糊的"未识别出引擎"有用得多。
+    """
+    best_exe = 0
+    nfiles = 0
+    total = 0
+    try:
+        for i, f in enumerate(root.rglob("*")):
+            if i >= max_scan:
+                break
+            try:
+                if not f.is_file():
+                    continue
+                sz = f.stat().st_size
+            except OSError:
+                continue
+            nfiles += 1
+            total += sz
+            if f.suffix.lower() == ".exe" and sz > best_exe:
+                best_exe = sz
+    except OSError:
+        return (False, "目录不可读")
+    # 主流游戏的主程序动辄几十 MB；小于 20 MB 的最大 exe 基本只可能是工具/安装包
+    if best_exe >= 20 * 1024 * 1024:
+        return (True, f"最大 exe {best_exe / 1024 / 1024:.0f} MB")
+    if total >= 500 * 1024 * 1024:
+        return (True, f"总量 {total / 1024 / 1024 / 1024:.1f} GB")
+    return (False, f"最大 exe {best_exe / 1024 / 1024:.1f} MB、共 {nfiles} 个文件、"
+                   f"合计 {total / 1024 / 1024:.1f} MB")
 
 
 def scan_install_dir(install_dir: Path | str, game_name: str = "") -> InstallScan:
@@ -731,6 +838,17 @@ def scan_install_dir(install_dir: Path | str, game_name: str = "") -> InstallSca
     scan.engine = detect_engine(root)
     name = game_name or scan.engine.product
 
+    # 反查名字候选：显示名 → 引擎产品名 → exe 内名 → 公司名 → 目录名。
+    # 顺序即优先级；去重后交给 _appdata_reverse 做模糊匹配。
+    # 破解版/小众游戏的关键是 **InternalName** 与 **CompanyName**：
+    # 实测「高三最后300天」存档在 %APPDATA%/LIANG/Gaosan300，
+    # LIANG 是 CompanyName、Gaosan300 是 InternalName，显示名一个都对不上。
+    reverse_names = [name, scan.engine.product, scan.engine.internal,
+                     scan.engine.company, root.name]
+    _seen: set[str] = set()
+    reverse_names = [n for n in reverse_names
+                     if n and not (n.lower() in _seen or _seen.add(n.lower()))]
+
     # ③ 本体内部的存档文件夹（实测命中率最高）
     inner = save_dirs_in_install(root)
     for path, why in inner:
@@ -740,6 +858,14 @@ def scan_install_dir(install_dir: Path | str, game_name: str = "") -> InstallSca
             # 目录名具体 + 内容是多份存档 → high；否则 medium。
             # 早期用 `if "含存档文件" in why` 判断，改成带数量的说法后
             # 这句话不再出现，置信度会整体掉到 medium，所以改成看分数。
+            if _looks_like_bundled_template(path):
+                # 模板档：本体里这份是随包分发的演示存档，玩家的真进度多半在 AppData，
+                # 所以不给 high，并把 AppData 反查结果一起列出来让人选。
+                scan.confidence = "medium"
+                scan.reason = why + "（疑似随包分发的模板存档，玩家真存档可能在下面几条）"
+                extra = _appdata_reverse(reverse_names, min_strength=2)
+                scan.candidates = extra[:4] + [c for c in inner[:6] if c[0] != path]
+                return scan
             scan.confidence = "high" if _inner_confidence(path) else "medium"
             scan.candidates = inner[1:7]
             return scan
@@ -747,7 +873,6 @@ def scan_install_dir(install_dir: Path | str, game_name: str = "") -> InstallSca
     # ④ 存档根目录反查：Unity/大厂游戏的 company 名常读不到，
     #    靠产品名去 <公司>/<游戏> 里反查最可靠（实测覆盖 LocalLow、
     #    Documents/Rockstar Games、Saved Games 三大布局）
-    reverse_names = [name, scan.engine.product, root.name]
     reverse = _appdata_reverse(reverse_names, min_strength=2)
     for path, why in reverse:
         scan.save_dir = path
@@ -774,6 +899,17 @@ def scan_install_dir(install_dir: Path | str, game_name: str = "") -> InstallSca
     tried = {str(p).lower() for p, _ in reverse}
     weak_reverse = [(p, w) for p, w in reverse_all if str(p).lower() not in tried]
     scan.candidates = reverse[:6] + inner[:6] + weak_reverse[:6] + expanded[:6]
+
+    # 先判断"这个目录里到底有没有游戏" —— 空壳目录说"未识别出引擎"是在甩锅给产品，
+    # 用户会以为工具不行。实测本机 25 个 game 目录里有 7 个是空壳或只剩 mod 残留。
+    body_ok, body_why = _dir_looks_like_game_body(root)
+    if not body_ok:
+        scan.reason = (f"这个目录里似乎没有游戏本体（{body_why}）——"
+                       f"多半只是残留/空壳文件夹。请选游戏真正安装的那一层目录")
+        if scan.candidates:
+            scan.reason += "；下面几条是名字对得上的目录，可人工确认"
+        return scan
+
     if scan.candidates:
         scan.reason = "未发现确定项，下面是可用候选，请人工确认"
     elif scan.engine.name == "unknown":
