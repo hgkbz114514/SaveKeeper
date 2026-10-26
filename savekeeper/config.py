@@ -187,6 +187,15 @@ class Config:
         if game is not None:
             game.custom_path = path
 
+    def clear_path_override(self, game_id: str) -> bool:
+        """清掉手动路径，回到纯自动探测。返回 True 表示确实清掉了一条。"""
+        had = self.path_overrides.pop(game_id, None) is not None
+        game = self.get_game(game_id)
+        if game is not None and game.custom_path:
+            game.custom_path = ""
+            had = True
+        return had
+
     def backup_dir(self) -> Path:
         """返回可写的备份根目录（缓存，避免每次探测都建文件）。"""
         cached = getattr(self, "_backup_dir_cache", None)

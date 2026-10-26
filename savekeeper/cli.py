@@ -204,9 +204,27 @@ def cmd_setpath(args: argparse.Namespace) -> int:
     cfg, catalog = _load()
     if args.game not in catalog:
         raise SystemExit(f"未知游戏 id：{args.game}")
+    # 设之前给条提示：路径不存在时仍然保存，但用户得知道它在解析时会被跳过
+    target = paths.expand(args.path)
+    if not target.is_dir():
+        print(f"[注意] 目录不存在：{target}")
+        print("       仍然已保存，但解析时会跳过它并回退到自动探测。")
     cfg.set_path_override(args.game, args.path)
     cfg_mod.save(cfg)
     print(f"已设置 {catalog[args.game].name} 存档目录：{args.path}")
+    print("手动路径优先于所有自动探测；撤销用 unsetpath。")
+    return 0
+
+
+def cmd_unsetpath(args: argparse.Namespace) -> int:
+    cfg, catalog = _load()
+    if args.game not in catalog:
+        raise SystemExit(f"未知游戏 id：{args.game}")
+    if not cfg.clear_path_override(args.game):
+        print(f"{catalog[args.game].name} 没有设置过手动路径。")
+        return 0
+    cfg_mod.save(cfg)
+    print(f"已清除 {catalog[args.game].name} 的手动路径，恢复自动探测。")
     return 0
 
 
@@ -373,10 +391,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("path")
     sp.set_defaults(func=cmd_add)
 
-    sp = sub.add_parser("setpath", help="手动指定存档目录")
+    sp = sub.add_parser("setpath", help="手动指定存档目录（优先于所有自动探测）")
     sp.add_argument("game")
     sp.add_argument("path")
     sp.set_defaults(func=cmd_setpath)
+
+    sp = sub.add_parser("unsetpath", help="撤销手动指定，恢复自动探测")
+    sp.add_argument("game")
+    sp.set_defaults(func=cmd_unsetpath)
 
     sub.add_parser("config", help="查看当前配置").set_defaults(func=cmd_config)
 

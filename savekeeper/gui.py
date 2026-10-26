@@ -102,7 +102,10 @@ class SaveKeeperApp(tk.Tk):
         self.btn_export.grid(row=0, column=1, sticky="ew", padx=2)
         self.btn_import.grid(row=0, column=2, sticky="ew", padx=2)
         ttk.Button(btns, text="设置存档路径", command=self.set_path).grid(
-            row=1, column=0, columnspan=2, sticky="ew", padx=2, pady=(4, 0)
+            row=1, column=0, sticky="ew", padx=2, pady=(4, 0)
+        )
+        ttk.Button(btns, text="恢复自动探测", command=self.clear_path).grid(
+            row=1, column=1, sticky="ew", padx=2, pady=(4, 0)
         )
         ttk.Button(btns, text="打开备份目录", command=self.open_backup_dir).grid(
             row=1, column=2, sticky="ew", padx=2, pady=(4, 0)
@@ -215,6 +218,7 @@ class SaveKeeperApp(tk.Tk):
 
         self.lbl_name.configure(text=f"{game.name}　{game.platform}")
         resolved = self._resolved.get(game.id)
+        manual = games_mod.manual_path_state(game)
         if resolved:
             file_count = 0
             total_size = 0
@@ -225,8 +229,17 @@ class SaveKeeperApp(tk.Tk):
                         file_count += 1
                     except OSError:
                         continue
-            self.lbl_path.configure(text=f"存档目录：{resolved}", foreground="#060")
+            suffix = "　（手动指定）" if manual == "ok" else ""
+            self.lbl_path.configure(
+                text=f"存档目录：{resolved}{suffix}", foreground="#060"
+            )
             self.lbl_stat.configure(text=f"{file_count} 个文件 · {paths.human_size(total_size)}")
+        elif manual == "stale":
+            # 设过手动路径但目录没了 —— 必须说清楚，否则用户以为还在用自己的路径
+            self.lbl_path.configure(
+                text=f"存档目录：手动指定的路径已不存在（{game.custom_path}）", foreground="#a00"
+            )
+            self.lbl_stat.configure(text="可重新点「设置存档路径」指定，或点右键菜单恢复自动探测")
         else:
             self.lbl_path.configure(
                 text="存档目录：未检测到（可点「设置存档路径」手动指定）", foreground="#a00"
@@ -615,7 +628,33 @@ class SaveKeeperApp(tk.Tk):
         self.cfg.set_path_override(game.id, directory)
         cfg_mod.save(self.cfg)
         self.refresh_games()
-        self.set_status(f"已设置 {game.name} 存档目录：{directory}")
+        self.game_list.selection_clear(0, "end")
+        ids = [g.id for g in self._visible]
+        if game.id in ids:
+            self.game_list.selection_set(ids.index(game.id))
+        self.on_select()
+        self.set_status(f"已设置 {game.name} 存档目录：{directory}（手动路径优先于自动探测）")
+
+    def clear_path(self) -> None:
+        """撤销手动路径，回到自动探测。
+
+        没有这个入口的话，用户一旦设错就再也回不去了 —— 旧版甚至设对了也没用，
+        因为手动路径排在自动探测后面。
+        """
+        game = self.current_game()
+        if game is None:
+            return
+        if not self.cfg.clear_path_override(game.id):
+            messagebox.showinfo("SaveKeeper", f"{game.name} 没有设置过手动路径。", parent=self)
+            return
+        cfg_mod.save(self.cfg)
+        self.refresh_games()
+        ids = [g.id for g in self._visible]
+        if game.id in ids:
+            self.game_list.selection_clear(0, "end")
+            self.game_list.selection_set(ids.index(game.id))
+        self.on_select()
+        self.set_status(f"已恢复 {game.name} 的自动探测")
 
     def add_from_install_dir(self) -> None:
         """选一个游戏本体目录 → 反推存档位置 → 存成自定义游戏。

@@ -6,7 +6,7 @@
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-lightgrey)
 ![Deps](https://img.shields.io/badge/runtime%20deps-0-success)
-![Tests](https://img.shields.io/badge/tests-69%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-73%20passed-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ![SaveKeeper 主界面](assets/screenshot.png)
@@ -96,6 +96,16 @@ python -m PyInstaller SaveKeeper.spec --noconfirm --clean
 
 - **「＋ 从游戏文件夹添加」** —— 选游戏本体目录（含 `.exe` 那层），它反推存档位置并给你看依据，确认后入列。绿色版、破解版、刚下的新游戏都走这条。
 - **「＋ 自定义游戏」** —— 你已经知道存档在哪，直接手动指定。
+
+**存档位置找错了？** 右侧还有两个按钮：
+
+- **「设置存档路径」** —— 手动指定目录。手动路径**优先于所有自动探测**（Steam 云存档、内置候选、自动发现全部让路）——
+  你点这个按钮就是在明确表态，自动探测不可能比你自己更准。
+  指向的目录如果被删了或改名了，界面上会红字写明「手动指定的路径已不存在」并回退到自动探测，不会静默装作还在用你的路径。
+- **「恢复自动探测」** —— 撤销手动指定，回到纯自动。设错了随时能回去。
+
+> 这两点都是 0.4.7 才修好的。旧版把手动路径排在自动探测**之后**，
+> 于是「自动能探测到」的游戏上，这个按钮存了配置却完全不生效，还不给任何提示。
 
 ### 命令行
 
@@ -207,8 +217,18 @@ python -m savekeeper recent --days 30
 
 ```bash
 python -m savekeeper setpath eldenring "D:/Save/EldenRing"
+# 撤销手动指定，回到自动探测
+python -m savekeeper unsetpath eldenring
 python -m savekeeper add "我的游戏" "D:/Save/MyGame"
 ```
+
+**手动路径的优先级高于上面所有自动探测。** 这不是随手定的顺序 —— 你手动指定，
+就是明确说你比自动探测更清楚存档在哪；让自动结果盖掉你的选择没有任何道理。
+0.4.7 之前这里正好反着写（手动排第 4，前三级命中就 return），
+所以在「本来就能自动探测到」的游戏上，设了等于没设，而且完全不提示。
+
+手动目录被删掉或改名后不会让整条链断掉：解析时会跳过它并回退到自动探测，
+界面上用红字标注「手动指定的路径已不存在」，你能一眼看出回退了。
 
 Steam 安装目录从注册表 `HKCU\Software\Valve\Steam` 读取，只读不写。
 
@@ -373,6 +393,7 @@ savekeeper/
 
 ## 更新记录
 
+- **0.4.7** —— **「设置存档路径」以前是失效的**，这一版把它修好并补齐了反向操作。旧解析顺序是 Steam 云存档 → 内置候选 → Steam userdata → **手动路径** → 自动发现，前几级一旦命中就 `return`，手动路径根本轮不上 —— 界面存了、配置文件也写了，解析结果纹丝不动，而且不给任何提示（实测「黑暗之魂3」自动命中 `%APPDATA%/DarkSoulsIII` 后再手动指定别的目录，结果完全不变）。现在顺序调整为 **手动指定 > 自动探测全部来源**，理由很直接：用户点那个按钮就是在明确表态，自动探测不可能比用户更准。新增 `manual_path_state()` 三态（未设 / 生效 / 已失效）：手动目录被删或改名后会回退到自动探测，并在界面上红字说明「手动指定的路径已不存在」，而不是静默回退让你以为还在用自己的路径。配套加了 **「恢复自动探测」按钮**（旧版一旦设错就再也回不去）与 `unsetpath` 子命令；`setpath` 指向不存在的目录时会明确警告「仍已保存，但解析时会跳过并回退」。严格说旧版的 `test_resolve_prefers_custom_path` 是个假测试 —— 它把 candidates 指向了同样存在的目录，三条候选恰好都在，碰巧通过。新增 4 条测试用 `git stash` 回滚实现验证过确实会挂（4 failed / 9 passed）。测试 69 → 73 个
 - **0.4.6** —— 小众游戏与破解版（绿色版）的存档反推，修掉三个真缺陷：**深度差一层**（`_scan_save_stats` 写成 `depth + 1 < max_depth`，第 `max_depth` 层目录里的文件永远统计不到，实测「高三最后300天」的存档在 `profiles/<steam_id>/cloud/*.sav` 第 3 层，旧版统计出 0 个文件）；**PE 的 InternalName 没参与反查**（该游戏存档在 `%APPDATA%/LIANG/Gaosan300`，公司名 `LIANG` 与产品名都猜不出目录，只有 `InternalName=Gaosan300` 对得上）；**模板档冒充真存档**（多款 Ren'Py 游戏的 `game/saves/auto-1-LT1.save` 逐字节相同，现在只有 `auto-*.save` 且无玩家手动存档时降级为「疑似模板」并把 AppData 反查结果放候选第一位）。顺带：主程序识别不再把 mod 工具当游戏（RDR2 只剩 LML 残留时会选中 `ModManager/ModManager.UI.exe`）；目录里没有游戏本体时直说「似乎没有游戏本体」而不是笼统的「未识别出引擎」，未确定时也会打印原因。测试 64 → 69 个
 - **0.4.5** —— 导入被拦时不再让你瞎换备份位置：现在会分清「备份目录被拦」（换位置自救）和「游戏存档目录被拦」（备份位置怎么换都没用），后者直接引导**以管理员身份重启**，一次点选完成，重启后再操作一次即可。
 - **0.4.4** —— 备份目录预检与自救升级：启动时先实测备份目录可写，被杀软拦截立刻弹窗引导，不再等点了导出才报错；实测火绒只放行程序写自己所在目录，打包版自动把「exe 同目录」加入备份候选，自救框直接推荐可用的位置。

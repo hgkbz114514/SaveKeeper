@@ -213,19 +213,36 @@ BUILTIN_GAMES: list[Game] = [
 # --------------------------------------------------------------------------- #
 
 def resolve_game_path(game: Game) -> Path | None:
-    """按优先级解析存档目录。命中后不写入配置（只读探测）。"""
-    # 1) Steam 云存档
+    """按优先级解析存档目录。命中后不写入配置（只读探测）。
+
+    优先级：**用户手动指定** > Steam 云存档 > 硬编码候选 > Steam userdata > 自动发现。
+
+    手动路径排第一是有代价换来的 —— 用户点「设置存档路径」就是在明确表态
+    "我知道存档在哪"，这时任何自动探测都不可能比他更准。旧版本把手动配置
+    排在第 4 位，导致自动能命中的游戏（Steam 云存档、硬编码候选）上这个按钮
+    完全失效：界面存了、配置也写了，解析结果纹丝不动，且没有任何提示。
+
+    手动路径指向的目录不存在时（用户删了、盘符换了）静默跳过，回退到自动探测，
+    不至于整条链断掉。要让用户知道这件事，用 :func:`manual_path_state` 查。
+    """
+    # 1) 用户手动指定：显式意图优先
+    if game.custom_path:
+        p = paths.expand(game.custom_path)
+        if p.is_dir():
+            return p
+
+    # 2) Steam 云存档
     if game.steam_appid:
         cloud = paths.steam_cloud_saves({game.steam_appid: game.name})
         if game.steam_appid in cloud:
             return cloud[game.steam_appid]
 
-    # 2) 硬编码候选路径
+    # 3) 硬编码候选路径
     hits = paths.existing(game.candidates)
     if hits:
         return hits[0]
 
-    # 3) Steam userdata 目录（兼容非 remote 布局）
+    # 4) Steam userdata 目录（兼容非 remote 布局）
     if game.steam_appid:
         root = paths.steam_root()
         if root is not None:
@@ -236,12 +253,6 @@ def resolve_game_path(game: Game) -> Path | None:
                     if cand.is_dir() and any(cand.iterdir()):
                         return cand
 
-    # 4) 用户手动配置
-    if game.custom_path:
-        p = paths.expand(game.custom_path)
-        if p.is_dir():
-            return p
-
     # 5) 自动发现兜底：内置库没覆盖的新游戏靠这里
     #    延迟导入，避免 discover ↔ games 的循环引用
     from . import discover
@@ -250,6 +261,20 @@ def resolve_game_path(game: Game) -> Path | None:
     if result.ok and result.confidence in ("high", "medium"):
         return result.path
     return None
+
+
+def manual_path_state(game: Game) -> str:
+    """用户手动路径的三种状态，供界面提示用。
+
+    - ``""``      —— 没手动设过，一切走自动探测
+    - ``"ok"``    —— 设了且目录在，当前就在用它
+    - ``"stale"`` —— 设了但目录没了，已回退到自动探测（**必须提示用户**）
+
+    返回 stale 却不提示是最糟的：用户以为还在用自己的路径，实际已经被悄悄换掉了。
+    """
+    if not game.custom_path:
+        return ""
+    return "ok" if paths.expand(game.custom_path).is_dir() else "stale"
 
 
 def detect_all(games: list[Game]) -> dict[str, Path | None]:

@@ -100,3 +100,81 @@ def test_builtin_games_not_mutated_by_overrides() -> None:
     cfg.set_path_override("stardew", "D:/Somewhere")
     cfg2 = cfg_mod.Config()
     assert cfg2.get_game("stardew").custom_path == ""
+
+
+# ---------------------------------------------------------------- 手动路径优先级
+# 旧版把手动配置排在第 4 位（Steam 云存档 → 硬编码候选 → Steam userdata → 手动），
+# 结果在「自动能命中」的游戏上，用户点「设置存档路径」会完全失效：界面存了、
+# 配置也写了，解析结果纹丝不动，还不给任何提示。下面几条钉住新顺序。
+
+
+def test_manual_path_beats_auto_detection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """手动路径必须排第一：用户点按钮就是在明确表态，自动探测不可能更准。"""
+    monkeypatch.setenv("SK_DIR", str(tmp_path))
+    auto = tmp_path / "auto_hit"
+    auto.mkdir()
+    manual = tmp_path / "manual_choice"
+    manual.mkdir()
+
+    game = Game(
+        id="t", name="测试", platform="Steam",
+        candidates=["%SK_DIR%/auto_hit"],  # 这一条本来会被命中
+        custom_path=str(manual),
+    )
+    resolved = games_mod.resolve_game_path(game)
+    assert resolved == manual, f"手动路径应胜出，实际用了 {resolved}"
+
+
+def test_stale_manual_path_falls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """手动路径指向的目录没了 → 回退到自动探测，不能整条链断掉。"""
+    monkeypatch.setenv("SK_DIR", str(tmp_path))
+    auto = tmp_path / "auto_hit"
+    auto.mkdir()
+
+    game = Game(
+        id="t", name="测试", platform="Steam",
+        candidates=["%SK_DIR%/auto_hit"],
+        custom_path=str(tmp_path / "gone" / "not_there"),
+    )
+    assert games_mod.resolve_game_path(game) == auto
+    assert games_mod.manual_path_state(game) == "stale"
+
+
+def test_manual_path_state_reports_three_cases(tmp_path: Path) -> None:
+    live = tmp_path / "live"
+    live.mkdir()
+
+    none = Game(id="a", name="没设过", platform="Steam", candidates=[])
+    live_g = Game(id="b", name="设了且存在", platform="Steam", candidates=[], custom_path=str(live))
+    dead_g = Game(id="c", name="设了但没了", platform="Steam", candidates=[],
+                  custom_path=str(tmp_path / "missing"))
+
+    assert games_mod.manual_path_state(none) == ""
+    assert games_mod.manual_path_state(live_g) == "ok"
+    assert games_mod.manual_path_state(dead_g) == "stale"
+
+
+def test_clear_path_override_restores_auto(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """撤销手动路径后要真的回到自动探测，否则用户设错了就再也回不去。"""
+    monkeypatch.setenv("SK_DIR", str(tmp_path))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    auto = tmp_path / "auto_hit"
+    auto.mkdir()
+    manual = tmp_path / "manual_choice"
+    manual.mkdir()
+
+    cfg = cfg_mod.Config()
+    cfg.custom_games.append(
+        Game(id="t", name="测试", platform="Steam", candidates=["%SK_DIR%/auto_hit"])
+    )
+    cfg.set_path_override("t", str(manual))
+    assert games_mod.resolve_game_path(cfg.get_game("t")) == manual
+
+    assert cfg.clear_path_override("t") is True
+    game = cfg.get_game("t")
+    assert game.custom_path == ""
+    assert "t" not in cfg.path_overrides
+    assert games_mod.resolve_game_path(game) == auto
+
+    # 再清一次要老实返回 False，不能假装成功
+    assert cfg.clear_path_override("t") is False
